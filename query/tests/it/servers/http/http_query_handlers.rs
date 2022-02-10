@@ -93,10 +93,9 @@ async fn test_bad_sql() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_async() -> Result<()> {
     let ep = create_endpoint();
-    let sql = "select sleep(0.2)";
+    let sql = "select sleep(0.01)";
     let json = serde_json::json!({"sql": sql.to_string(), "pagination": {"wait_time_secs": 0}});
 
     let (status, result) = post_json_to_endpoint(&ep, &json).await?;
@@ -109,7 +108,8 @@ async fn test_async() -> Result<()> {
     assert!(result.stats.progress.is_some());
     assert!(result.schema.is_some());
     assert_eq!(result.state, ExecuteStateName::Running,);
-    sleep(Duration::from_millis(300)).await;
+    // 100ms longer then sleep duration
+    sleep(Duration::from_millis(110)).await;
 
     // get page, support retry
     for _ in 1..3 {
@@ -163,7 +163,7 @@ async fn test_result_timeout() -> Result<()> {
         .nest("/v1/query", query_route())
         .with(HTTPSessionMiddleware { session_manager });
 
-    let sql = "select sleep(0.1)";
+    let sql = "select sleep(0.01)";
     let json = serde_json::json!({"sql": sql.to_string(), "pagination": {"wait_time_secs": 0}});
     let (status, result) = post_json_to_endpoint(&ep, &json).await?;
     assert_eq!(status, StatusCode::OK);
@@ -171,11 +171,13 @@ async fn test_result_timeout() -> Result<()> {
     let next_uri = make_page_uri(&query_id, 0);
     assert_eq!(result.next_uri, Some(next_uri.clone()));
 
+    // 100ms longer then sleep duration
     sleep(Duration::from_millis(110)).await;
     let response = get_uri(&ep, &next_uri).await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    sleep(std::time::Duration::from_millis(210)).await;
+    // 100ms longer then result_time_out
+    sleep(std::time::Duration::from_millis(300)).await;
     let response = get_uri(&ep, &next_uri).await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     Ok(())
