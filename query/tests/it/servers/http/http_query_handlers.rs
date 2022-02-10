@@ -14,7 +14,7 @@
 
 use std::fs::File;
 use std::io::Read;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::encode_config;
 use base64::URL_SAFE_NO_PAD;
@@ -48,6 +48,7 @@ use poem::Response;
 use poem::Route;
 use pretty_assertions::assert_eq;
 use tokio::time::sleep;
+use common_base::tokio::time::timeout;
 
 use crate::tests::tls_constants::TEST_CA_CERT;
 use crate::tests::tls_constants::TEST_CN_NAME;
@@ -98,6 +99,7 @@ async fn test_async() -> Result<()> {
     let sql = "select sleep(0.01)";
     let json = serde_json::json!({"sql": sql.to_string(), "pagination": {"wait_time_secs": 0}});
 
+    let start = Instant::now();
     let (status, result) = post_json_to_endpoint(&ep, &json).await?;
     assert_eq!(status, StatusCode::OK);
     let query_id = result.id;
@@ -109,7 +111,9 @@ async fn test_async() -> Result<()> {
     assert!(result.schema.is_some());
     assert_eq!(result.state, ExecuteStateName::Running,);
     // 100ms longer then sleep duration
+    let t1 = start.elapsed().as_millis();
     sleep(Duration::from_millis(110)).await;
+    let t2 = start.elapsed().as_millis();
 
     // get page, support retry
     for _ in 1..3 {
@@ -117,7 +121,7 @@ async fn test_async() -> Result<()> {
 
         let (status, result) = get_uri_checked(&ep, &uri).await?;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(result.data.len(), 1);
+        assert_eq!(result.data.len(), 1, "result = {:?}, {} {}", result, t1, t2);
         assert!(result.error.is_none(), "{:?}", result.error);
         assert!(result.next_uri.is_none());
         assert!(result.schema.is_none());
