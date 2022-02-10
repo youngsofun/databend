@@ -112,7 +112,7 @@ async fn test_async() -> Result<()> {
     assert_eq!(result.state, ExecuteStateName::Running,);
     // 100ms longer then sleep duration
     let t1 = start.elapsed().as_millis();
-    sleep(Duration::from_millis(110)).await;
+    sleep(Duration::from_millis(50)).await;
     let t2 = start.elapsed().as_millis();
 
     // get page, support retry
