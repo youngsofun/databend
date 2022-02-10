@@ -75,10 +75,18 @@ impl Function2 for SleepFunction {
         }
         // is_numeric is checked in return_type()
         let duration = if c.data_type_id().is_floating() {
-            Duration::from_secs_f64(c.get(0).as_f64()?)
+            let secs = c.get(0).as_f64()?;
+            Duration::from_secs_f64(secs)
         } else {
             Duration::from_secs(c.get_u64(0)?)
         };
+
+        if duration.ge(&Duration::from_secs(3)) {
+            return Err(ErrorCode::BadArguments(format!(
+                "The maximum sleep time is 3 seconds. Requested: {:?}",
+                duration
+            )));
+        }
         std::thread::sleep(duration);
         let t = Int8Type::arc();
         t.create_constant_column(&DataValue::UInt64(0), input_rows)
