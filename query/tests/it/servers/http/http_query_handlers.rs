@@ -14,7 +14,8 @@
 
 use std::fs::File;
 use std::io::Read;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
 use base64::encode_config;
 use base64::URL_SAFE_NO_PAD;
@@ -48,7 +49,6 @@ use poem::Response;
 use poem::Route;
 use pretty_assertions::assert_eq;
 use tokio::time::sleep;
-use common_base::tokio::time::timeout;
 
 use crate::tests::tls_constants::TEST_CA_CERT;
 use crate::tests::tls_constants::TEST_CN_NAME;
