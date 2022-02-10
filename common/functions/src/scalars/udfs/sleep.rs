@@ -73,9 +73,13 @@ impl Function2 for SleepFunction {
                 self.display_name
             )));
         }
-
-        let seconds = c.get_u64(0)?;
-        std::thread::sleep(Duration::from_secs(seconds));
+        // is_numeric is checked in return_type()
+        let duration = if c.data_type_id().is_floating() {
+            Duration::from_secs_f64(c.get(0).as_f64()?)
+        } else {
+            Duration::from_secs(c.get_u64(0)?)
+        };
+        std::thread::sleep(duration);
         let t = Int8Type::arc();
         t.create_constant_column(&DataValue::UInt64(0), input_rows)
     }
