@@ -41,6 +41,7 @@ use super::type_struct::StructType;
 use super::type_timestamp::TimestampType;
 use crate::prelude::*;
 use crate::serializations::ConstSerializer;
+use crate::types::type_decimal::DecimalType;
 
 pub const ARROW_EXTENSION_NAME: &str = "ARROW:extension:databend_name";
 pub const ARROW_EXTENSION_META: &str = "ARROW:extension:databend_metadata";
@@ -63,6 +64,7 @@ pub enum DataTypeImpl {
     Float32(Float32Type),
     Float64(Float64Type),
     Date(DateType),
+    Decimal(DecimalType),
     Timestamp(TimestampType),
     String(StringType),
     Struct(StructType),

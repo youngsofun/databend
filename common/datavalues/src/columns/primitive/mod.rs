@@ -378,6 +378,7 @@ pub type Int8Column = PrimitiveColumn<i8>;
 pub type Int16Column = PrimitiveColumn<i16>;
 pub type Int32Column = PrimitiveColumn<i32>;
 pub type Int64Column = PrimitiveColumn<i64>;
+pub type Int128Column = PrimitiveColumn<i128>;
 
 pub type Float32Column = PrimitiveColumn<f32>;
 pub type Float64Column = PrimitiveColumn<f64>;

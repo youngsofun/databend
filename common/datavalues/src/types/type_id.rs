@@ -44,6 +44,7 @@ pub enum TypeID {
     Float32,
     Float64,
 
+    Decimal,
     String,
 
     /// A 32-bit date representing the elapsed time since UNIX epoch (1970-01-01)

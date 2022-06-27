@@ -36,6 +36,7 @@ pub enum DataValue {
     Int64(i64),
     UInt64(u64),
     Float64(f64),
+    Int128(i128),
     String(Vec<u8>),
 
     // Container struct.
@@ -205,10 +206,11 @@ impl DataValue {
         }
     }
 
-    pub fn as_i64(&self) -> Result<i64> {
+    pub fn as_i128(&self) -> Result<i128> {
         match self {
-            DataValue::Int64(v) => Ok(*v),
-            DataValue::UInt64(v) => Ok(*v as i64),
+            DataValue::Int128(v) => Ok(*v),
+            DataValue::Int64(v) => Ok(*v as i128),
+            DataValue::UInt64(v) => Ok(*v as i128),
             other => Result::Err(ErrorCode::BadDataValueType(format!(
                 "Unexpected type:{:?} to get i64 number",
                 other.value_type()
@@ -242,6 +244,7 @@ impl DataValue {
         match self {
             DataValue::Int64(v) => Ok(Vec::<u8>::from((*v).to_string())),
             DataValue::UInt64(v) => Ok(Vec::<u8>::from((*v).to_string())),
+            DataValue::Int128(v) => Ok(Vec::<u8>::from((*v).to_string())),
             DataValue::Float64(v) => Ok(Vec::<u8>::from((*v).to_string())),
             DataValue::String(v) => Ok(v.to_owned()),
             DataValue::Variant(v) => Ok(v.to_string().into_bytes()),
@@ -309,6 +312,7 @@ impl Ord for DataValue {
                 (DataValue::Boolean(v1), DataValue::Boolean(v2)) => v1.cmp(v2),
                 (DataValue::UInt64(v1), DataValue::UInt64(v2)) => v1.cmp(v2),
                 (DataValue::Int64(v1), DataValue::Int64(v2)) => v1.cmp(v2),
+                (DataValue::Int128(v1), DataValue::Int128(v2)) => v1.cmp(v2),
                 (DataValue::Float64(v1), DataValue::Float64(v2)) => {
                     OrderedFloat::from(*v1).cmp(&OrderedFloat::from(*v2))
                 }
@@ -482,6 +486,7 @@ impl fmt::Display for DataValue {
             DataValue::Float64(v) => write!(f, "{}", v),
             DataValue::Int64(v) => write!(f, "{}", v),
             DataValue::UInt64(v) => write!(f, "{}", v),
+            DataValue::Int128(v) => write!(f, "{}", v),
             DataValue::String(v) => match std::str::from_utf8(v) {
                 Ok(v) => write!(f, "{}", v),
                 Err(_e) => {
@@ -514,6 +519,7 @@ impl fmt::Debug for DataValue {
             DataValue::Boolean(v) => write!(f, "{}", v),
             DataValue::Int64(v) => write!(f, "{}", v),
             DataValue::UInt64(v) => write!(f, "{}", v),
+            DataValue::Int128(v) => write!(f, "{:?}", v),
             DataValue::Float64(v) => write!(f, "{}", v),
             DataValue::String(_) => write!(f, "{}", self),
             DataValue::Array(_) => write!(f, "{}", self),

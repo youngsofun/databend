@@ -21,6 +21,7 @@ use common_exception::Result;
 use once_cell::sync::Lazy;
 
 use crate::prelude::*;
+use crate::types::type_decimal::DecimalType;
 
 pub struct TypeFactory {
     // types used by type conversion functions
@@ -48,10 +49,21 @@ static TYPE_FACTORY: Lazy<Arc<TypeFactory>> = Lazy::new(|| {
     type_factory.register(Float32Type::new_impl());
     type_factory.register(Float64Type::new_impl());
 
+    type_factory.register(DecimalType::new_impl());
+
     type_factory.register(DateType::new_impl());
     type_factory.register(VariantType::new_impl());
     type_factory.register(VariantArrayType::new_impl());
     type_factory.register(VariantObjectType::new_impl());
+
+    // Timestamp is a special case
+    {
+        for precision in 1..=38usize {
+            for scale in 0..precision {
+                type_factory.register(DecimalType::new_impl(precision, scale));
+            }
+        }
+    }
 
     // Timestamp is a special case
     {

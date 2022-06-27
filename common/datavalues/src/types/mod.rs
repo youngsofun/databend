@@ -37,6 +37,7 @@ mod date_converter;
 pub mod deserializations;
 pub mod serializations;
 mod type_factory;
+mod type_decimal;
 
 pub use arithmetics_type::*;
 pub use data_type::*;
