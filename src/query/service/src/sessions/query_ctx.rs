@@ -125,7 +125,7 @@ impl QueryContext {
         table_info: &StageTableInfo,
         _table_args: Option<Vec<Expression>>,
     ) -> Result<Arc<dyn Table>> {
-        StageTable::try_create(table_info.clone())
+        StageTable::with_stage_table_info(table_info.clone())
     }
 
     /// Fetch a Table by db and table name.
@@ -241,9 +241,11 @@ impl TableContext for QueryContext {
     fn build_table_from_source_plan(&self, plan: &ReadDataSourcePlan) -> Result<Arc<dyn Table>> {
         match &plan.source_info {
             SourceInfo::TableSource(table_info) => {
+                eprintln!(">>>  BUILDING TABLE  name is [{}]", table_info.name);
                 self.build_table_by_table_info(&plan.catalog, table_info, plan.tbl_args.clone())
             }
             SourceInfo::StageSource(stage_info) => {
+                eprintln!(">>>  BUILDING EXTERNAL BY TABLE INFO");
                 self.build_external_by_table_info(&plan.catalog, stage_info, plan.tbl_args.clone())
             }
         }

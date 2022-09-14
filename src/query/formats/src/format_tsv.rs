@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use common_datablocks::DataBlock;
 use common_datavalues::DataSchemaRef;
+use common_datavalues::DataSchemaRefExt;
 use common_datavalues::TypeDeserializer;
 use common_datavalues::TypeDeserializerImpl;
 use common_exception::ErrorCode;
@@ -52,6 +53,7 @@ impl InputState for TsvInputState {
 
 pub struct TsvInputFormat {
     schema: DataSchemaRef,
+    is_artificial_schema: bool,
     skip_rows: usize,
     min_accepted_rows: usize,
     min_accepted_bytes: usize,
@@ -65,10 +67,14 @@ impl TsvInputFormat {
                 factory.register_input(
                     $name,
                     Box::new(
-                        |name: &str, schema: DataSchemaRef, settings: FormatSettings| {
+                        |name: &str,
+                         schema: DataSchemaRef,
+                         is_artificial_schema: bool,
+                         settings: FormatSettings| {
                             TsvInputFormat::try_create(
                                 name,
                                 schema,
+                                is_artificial_schema,
                                 settings,
                                 $skip_rows,
                                 8192,
@@ -92,6 +98,7 @@ impl TsvInputFormat {
     pub fn try_create(
         _name: &str,
         schema: DataSchemaRef,
+        is_artificial_schema: bool,
         mut settings: FormatSettings,
         skip_rows: usize,
         min_accepted_rows: usize,
@@ -103,6 +110,7 @@ impl TsvInputFormat {
 
         Ok(Arc::new(TsvInputFormat {
             schema,
+            is_artificial_schema,
             settings,
             skip_rows,
             min_accepted_rows,
@@ -150,6 +158,35 @@ impl TsvInputFormat {
 
         index + 1
     }
+
+    fn read_row(
+        &self,
+        checkpoint_reader: &mut NestedCheckpointReader<MemoryReader>,
+        deserializers: &mut impl Iterator<Item = TypeDeserializerImpl>,
+        row_index: usize,
+    ) -> Result<Vec<TypeDeserializerImpl>> {
+        let mut cols = vec![];
+        while !checkpoint_reader.ignore_white_spaces_and_byte(b'\r')?
+            && !checkpoint_reader.ignore_white_spaces_and_byte(b'\n')?
+            && !checkpoint_reader.eof()?
+        {
+            if let Some(mut de) = deserializers.next() {
+                if checkpoint_reader.ignore_white_spaces_and_byte(b'\t')? {
+                    de.de_default(&self.settings);
+                } else {
+                    de.de_text(checkpoint_reader, &self.settings)?;
+                }
+                checkpoint_reader.ignore_white_spaces_and_byte(b'\t')?;
+                cols.push(de);
+            } else {
+                return Err(ErrorCode::BadBytes(format!(
+                    "Parse Tsv error at line {}",
+                    row_index
+                )));
+            }
+        }
+        Ok(cols)
+    }
 }
 
 impl InputFormat for TsvInputFormat {
@@ -191,42 +228,6 @@ impl InputFormat for TsvInputFormat {
             start_row: state.start_row_index,
             buf: memory,
         })
-    }
-
-    fn read_row(
-        &self,
-        checkpoint_reader: &mut NestedCheckpointReader<MemoryReader>,
-        deserializers: &mut Vec<common_datavalues::TypeDeserializerImpl>,
-        row_index: usize,
-    ) -> Result<()> {
-        for column_index in 0..deserializers.len() {
-            if checkpoint_reader.ignore_white_spaces_and_byte(b'\t')? {
-                deserializers[column_index].de_default(&self.settings);
-            } else {
-                deserializers[column_index].de_text(checkpoint_reader, &self.settings)?;
-
-                if column_index + 1 != deserializers.len() {
-                    checkpoint_reader.must_ignore_white_spaces_and_byte(b'\t')?;
-                }
-            }
-        }
-
-        checkpoint_reader.ignore_white_spaces_and_byte(b'\t')?;
-
-        if (!checkpoint_reader.ignore_white_spaces_and_byte(b'\n')?
-            & !checkpoint_reader.ignore_white_spaces_and_byte(b'\r')?)
-            && !checkpoint_reader.eof()?
-        {
-            return Err(ErrorCode::BadBytes(format!(
-                "Parse Tsv error at line {}",
-                row_index
-            )));
-        }
-
-        // \r\n
-        checkpoint_reader.ignore_white_spaces_and_byte(b'\n')?;
-
-        Ok(())
     }
 
     fn read_buf(&self, buf: &[u8], state: &mut Box<dyn InputState>) -> Result<(usize, bool)> {
@@ -281,37 +282,76 @@ impl InputFormat for TsvInputFormat {
     }
 
     fn deserialize_complete_split(&self, split: FileSplit) -> Result<Vec<DataBlock>> {
-        let mut deserializers = self.schema.create_deserializers(self.min_accepted_rows);
-
         let memory_reader = MemoryReader::new(split.buf);
         let mut checkpoint_reader = NestedCheckpointReader::new(memory_reader);
+
+        use common_datavalues::DataType;
+        let mut deserializers = vec![];
+        let mut deserializer_iter: Box<dyn Iterator<Item = TypeDeserializerImpl>> =
+            if self.is_artificial_schema {
+                Box::new(self.schema.fields().iter().map(|field| {
+                    let data_type = field.data_type();
+                    data_type.create_deserializer(self.min_accepted_rows)
+                }))
+            } else {
+                Box::new(
+                    self.schema
+                        .create_deserializers(self.min_accepted_rows)
+                        .into_iter(),
+                )
+            };
 
         let mut row_index = 0;
         while !checkpoint_reader.eof()? {
             checkpoint_reader.push_checkpoint();
-            if let Err(err) = self.read_row(&mut checkpoint_reader, &mut deserializers, row_index) {
-                let checkpoint_buffer = checkpoint_reader.get_checkpoint_buffer_end();
-                let msg = self.get_diagnostic_info(
-                    checkpoint_buffer,
-                    &split.path,
-                    row_index + split.start_row,
-                    self.schema.clone(),
-                    self.min_accepted_rows,
-                    self.settings.clone(),
-                )?;
-                let err = err.add_message_back(msg);
-                return Err(err);
+
+            let res = if row_index == 0 {
+                self.read_row(&mut checkpoint_reader, &mut deserializer_iter, row_index)
+            } else {
+                self.read_row(
+                    &mut checkpoint_reader,
+                    &mut deserializers.into_iter(),
+                    row_index,
+                )
+            };
+            // TODO duplicated code
+            match res {
+                Err(err) => {
+                    let checkpoint_buffer = checkpoint_reader.get_checkpoint_buffer_end();
+                    let msg = self.get_diagnostic_info(
+                        checkpoint_buffer,
+                        &split.path,
+                        row_index + split.start_row,
+                        self.schema.clone(),
+                        self.min_accepted_rows,
+                        self.settings.clone(),
+                    )?;
+                    let err = err.add_message_back(msg);
+                    return Err(err);
+                }
+                Ok(v) => {
+                    deserializers = v;
+                    checkpoint_reader.pop_checkpoint();
+                    row_index += 1;
+                }
             }
-            checkpoint_reader.pop_checkpoint();
-            row_index += 1;
         }
 
+        // TODO duplicated code
         let mut columns = Vec::with_capacity(deserializers.len());
         for deserializer in &mut deserializers {
             columns.push(deserializer.finish_to_column());
         }
 
-        Ok(vec![DataBlock::create(self.schema.clone(), columns)])
+        let schema = if self.is_artificial_schema {
+            let len = deserializers.len();
+            let fields = &self.schema.fields().as_slice()[0..len];
+            DataSchemaRefExt::create(fields.to_vec())
+        } else {
+            self.schema.clone()
+        };
+
+        Ok(vec![DataBlock::create(schema, columns)])
     }
 }
 

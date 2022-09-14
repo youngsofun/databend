@@ -154,6 +154,15 @@ pub enum TableReference<'a> {
         alias: Option<TableAlias<'a>>,
         travel_point: Option<TimeTravelPoint<'a>>,
     },
+
+    Stage {
+        span: &'a [Token<'a>],
+        name: String,
+        path: String,
+        files: Vec<String>,
+        alias: Option<TableAlias<'a>>,
+    },
+
     // `TABLE(expr)[ AS alias ]`
     TableFunction {
         span: &'a [Token<'a>],
@@ -263,6 +272,21 @@ impl<'a> Display for TableReference<'a> {
                     write!(f, " AT (TIMESTAMP => {ts})")?;
                 }
 
+                if let Some(alias) = alias {
+                    write!(f, " AS {alias}")?;
+                }
+            }
+            TableReference::Stage {
+                span: _,
+                name,
+                path,
+                files,
+                alias,
+            } => {
+                write!(f, "@{name}{path}")?;
+                write!(f, " FILES (")?;
+                write_comma_separated_list(f, files)?;
+                write!(f, ")")?;
                 if let Some(alias) = alias {
                     write!(f, " AS {alias}")?;
                 }

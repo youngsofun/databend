@@ -30,8 +30,9 @@ use crate::format_ndjson::NDJsonInputFormat;
 use crate::format_parquet::ParquetInputFormat;
 use crate::output_format::OutputFormatType;
 
-pub type InputFormatFactoryCreator =
-    Box<dyn Fn(&str, DataSchemaRef, FormatSettings) -> Result<Arc<dyn InputFormat>> + Send + Sync>;
+pub type InputFormatFactoryCreator = Box<
+    dyn Fn(&str, DataSchemaRef, bool, FormatSettings) -> Result<Arc<dyn InputFormat>> + Send + Sync,
+>;
 
 pub struct FormatFactory {
     case_insensitive_desc: HashMap<String, InputFormatFactoryCreator>,
@@ -77,6 +78,7 @@ impl FormatFactory {
         &self,
         name: impl AsRef<str>,
         schema: DataSchemaRef,
+        is_artificial_schema: bool,
         settings: FormatSettings,
     ) -> Result<Arc<dyn InputFormat>> {
         let origin_name = name.as_ref();
@@ -89,7 +91,7 @@ impl FormatFactory {
                 ErrorCode::UnknownFormat(format!("Unsupported formats: {}", origin_name))
             })?;
 
-        creator(origin_name, schema, settings)
+        creator(origin_name, schema, is_artificial_schema, settings)
     }
 
     pub fn get_output(&self, name: &str) -> Result<OutputFormatType> {

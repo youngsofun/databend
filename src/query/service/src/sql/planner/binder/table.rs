@@ -45,6 +45,7 @@ use crate::sql::plans::LogicalGet;
 use crate::sql::plans::Scalar;
 use crate::sql::BindContext;
 use crate::sql::IndexType;
+use crate::storages::stage::StageTable;
 use crate::storages::view::view_table::QUERY;
 use crate::storages::NavigationPoint;
 use crate::storages::Table;
@@ -238,6 +239,30 @@ impl<'a> Binder {
                 }
                 Ok((s_expr, bind_context))
             }
+            TableReference::Stage {
+                span: _,
+                name,
+                path,
+                files,
+                alias,
+            } => {
+                let stage_table: Arc<dyn Table> = self
+                    .resolve_stage(name.as_str(), path.as_str(), files)
+                    .await?;
+
+                let table_index = self.metadata.write().add_table(
+                    CATALOG_DEFAULT.to_owned(),
+                    "".to_owned(),
+                    stage_table,
+                );
+
+                let (s_expr, mut bind_context) =
+                    self.bind_base_table(bind_context, "", table_index).await?;
+                if let Some(alias) = alias {
+                    bind_context.apply_table_alias(alias, &self.name_resolution_ctx)?;
+                }
+                Ok((s_expr, bind_context))
+            }
         }
     }
 
@@ -291,8 +316,10 @@ impl<'a> Binder {
         let mut bind_context = BindContext::with_parent(Box::new(bind_context.clone()));
         let columns = self.metadata.read().columns_by_table_index(table_index);
         let table = self.metadata.read().table(table_index).clone();
+        // if table's schema is artificial, let it invisible in the unqualified wild card
+        let adhoc_schema = table.table.artificial_schema();
         for column in columns.iter() {
-            let visible_in_unqualified_wildcard = column.path_indices.is_none();
+            let visible_in_unqualified_wildcard = column.path_indices.is_none() && !adhoc_schema;
             let column_binding = ColumnBinding {
                 database_name: Some(database_name.to_string()),
                 table_name: Some(table.name.clone()),
@@ -337,6 +364,22 @@ impl<'a> Binder {
             table_meta = table_meta.navigate_to(self.ctx.clone(), tp).await?;
         }
         Ok(table_meta)
+    }
+
+    async fn resolve_stage(
+        &self,
+        name: &str,
+        path: &str,
+        files: &[String],
+    ) -> Result<Arc<dyn Table>> {
+        let tenant = self.ctx.get_tenant();
+        let stage_info = self
+            .ctx
+            .get_user_manager()
+            .get_stage(tenant.as_str(), name)
+            .await?;
+        let table = StageTable::with_stage_info(stage_info, &path, files)?;
+        Ok(table)
     }
 
     async fn resolve_data_travel_point(

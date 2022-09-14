@@ -106,7 +106,7 @@ pub enum TokenKind {
     #[regex(r"/\*([^\*]|(\*[^/]))*\*/", logos::skip)]
     CommentBlock,
 
-    #[regex(r#"[_a-zA-Z][_$a-zA-Z0-9]*"#)]
+    #[regex(r#"[_a-zA-Z$][_$a-zA-Z0-9]*"#)]
     Ident,
 
     #[regex(r#"`[^`]*`"#)]
@@ -114,7 +114,7 @@ pub enum TokenKind {
     #[regex(r#"'([^'\\]|\\.|'')*'"#)]
     QuotedString,
 
-    #[regex(r#"@([^\s`;'"])+"#)]
+    #[regex(r#"@([^\s`,;'"])+"#)]
     AtString,
 
     #[regex(r"[xX]'[a-fA-F0-9]*'")]

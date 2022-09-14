@@ -1,20 +1,21 @@
-// Copyright 2022 Datafuse Labs.
+//  Copyright 2022 Datafuse Labs.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//      http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use common_catalog::table_context::TableContext;
 use common_datavalues::DataSchemaRef;
 use common_exception::ErrorCode;
 use common_exception::Result;
@@ -24,18 +25,16 @@ use common_io::prelude::FormatSettings;
 use common_meta_types::StageFileFormatType;
 use common_meta_types::StageType;
 use common_meta_types::UserStageInfo;
+use common_pipeline_core::processors::port::InputPort;
+use common_pipeline_core::processors::port::OutputPort;
+use common_pipeline_core::processors::processor::ProcessorPtr;
+use common_pipeline_sources::processors::sources::Deserializer;
+use common_pipeline_sources::processors::sources::MultiFileSplitter;
+use common_pipeline_sources::processors::sources::OperatorInfo;
 use common_planners::StageTableInfo;
 use common_storage::init_operator;
 use opendal::Operator;
 use parking_lot::Mutex;
-
-use crate::pipelines::processors::port::InputPort;
-use crate::pipelines::processors::port::OutputPort;
-use crate::pipelines::processors::processor::ProcessorPtr;
-use crate::pipelines::processors::Deserializer;
-use crate::pipelines::processors::MultiFileSplitter;
-use crate::pipelines::processors::OperatorInfo;
-use crate::sessions::TableContext;
 
 pub struct StageSourceHelper {
     ctx: Arc<dyn TableContext>,
@@ -50,6 +49,7 @@ impl StageSourceHelper {
     pub fn try_create(
         ctx: Arc<dyn TableContext>,
         schema: DataSchemaRef,
+        artificial_schema: bool,
         table_info: StageTableInfo,
         files: Arc<Mutex<VecDeque<String>>>,
     ) -> Result<StageSourceHelper> {
@@ -74,8 +74,12 @@ impl StageSourceHelper {
             .as_bytes()
             .to_vec();
 
-        let file_format =
-            Self::get_input_format(&file_format_options.format, schema, format_settings.clone())?;
+        let file_format = Self::get_input_format(
+            &file_format_options.format,
+            schema,
+            artificial_schema,
+            format_settings.clone(),
+        )?;
 
         let operator_info = if stage_info.stage_type == StageType::Internal {
             OperatorInfo::Op(ctx.get_storage_operator()?)
@@ -124,9 +128,14 @@ impl StageSourceHelper {
         }
     }
 
+    pub fn input_format(&self) -> &Arc<dyn InputFormat> {
+        &self.file_format
+    }
+
     fn get_input_format(
         format: &StageFileFormatType,
         schema: DataSchemaRef,
+        is_artificial_schema: bool,
         format_settings: FormatSettings,
     ) -> Result<Arc<dyn InputFormat>> {
         let name = match format {
@@ -141,7 +150,12 @@ impl StageSourceHelper {
                 )));
             }
         };
-        let input_format = FormatFactory::instance().get_input(name, schema, format_settings)?;
+        let input_format = FormatFactory::instance().get_input(
+            name,
+            schema,
+            is_artificial_schema,
+            format_settings,
+        )?;
         Ok(input_format)
     }
 }
