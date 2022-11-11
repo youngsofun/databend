@@ -1420,6 +1420,7 @@ dependencies = [
 name = "common-formats"
 version = "0.1.0"
 dependencies = [
+ "bstr 1.0.1",
  "chrono-tz",
  "common-arrow",
  "common-datablocks",
@@ -1433,6 +1434,7 @@ dependencies = [
  "num",
  "once_cell",
  "pretty_assertions",
+ "serde_json",
 ]
 
 [[package]]
