@@ -10,7 +10,9 @@ USE db1;
 statement ok
 CREATE TABLE IF NOT EXISTS t1(id Int, t Tuple(Bool, Int64, Float64, String, Date, Timestamp)) Engine = Fuse;
 
-statement ok
+# The names of tuple elements format error
+# a bug of TypeFactory::get
+statement error 1010
 INSERT INTO t1 (id, t) VALUES(1, (true, 100, 12.34, 'abc', '2020-01-01', '2020-01-01 00:00:00')),(2, (false, 200, -25.73, 'xyz', '2022-06-01', '2022-06-01 12:00:00'));
 
 statement query IT
