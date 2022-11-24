@@ -160,18 +160,30 @@ impl InputContext {
         }
     }
 
-    pub async fn try_create_from_copy(
+    pub async fn split_files(
+        operator: &Operator,
+        settings: &Arc<Settings>,
+        stage_info: &UserStageInfo,
+        files: Vec<String>,
+    ) -> Result<Vec<Arc<SplitInfo>>> {
+        if files.is_empty() {
+            return Err(ErrorCode::BadArguments("no file to copy"));
+        }
+        let format = Self::get_input_format(&stage_info.file_format_options.format)?;
+        format
+            .get_splits(&files, &stage_info, operator, settings)
+            .await
+    }
+
+    pub fn try_create_from_copy(
         operator: Operator,
         settings: Arc<Settings>,
         schema: DataSchemaRef,
         stage_info: UserStageInfo,
-        files: Vec<String>,
+        splits: Vec<Arc<SplitInfo>>,
         scan_progress: Arc<Progress>,
         block_compact_thresholds: BlockCompactThresholds,
     ) -> Result<Self> {
-        if files.is_empty() {
-            return Err(ErrorCode::BadArguments("no file to copy"));
-        }
         let plan = Box::new(CopyIntoPlan { stage_info, files });
         let read_batch_size = settings.get_input_read_buffer_size()? as usize;
         let file_format_options = &plan.stage_info.file_format_options;
@@ -181,9 +193,6 @@ impl InputContext {
         let file_format_options = format_typ.final_file_format_options(&file_format_options)?;
 
         let format = Self::get_input_format(&format_typ)?;
-        let splits = format
-            .get_splits(&plan.files, &plan.stage_info, &operator, &settings, &schema)
-            .await?;
         let record_delimiter = {
             if file_format_options.stage.record_delimiter.is_empty() {
                 format.default_record_delimiter()

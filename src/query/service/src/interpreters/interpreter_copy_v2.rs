@@ -358,13 +358,15 @@ impl CopyInterpreterV2 {
             let schema = stage_table_info.schema.clone();
             let stage_info = stage_table_info.user_stage_info.clone();
             let compact_threshold = stage_table.get_block_compact_thresholds();
+            let splits =
+                InputContext::split_files(&operator, &settings, &stage_info, files).await?;
             let input_ctx = Arc::new(
                 InputContext::try_create_from_copy(
                     operator,
                     settings,
                     schema,
                     stage_info,
-                    files,
+                    splits,
                     ctx.get_scan_progress(),
                     compact_threshold,
                 )

@@ -19,12 +19,13 @@ use std::fmt::Formatter;
 use std::sync::Arc;
 
 use opendal::io_util::CompressAlgorithm;
+use common_catalog::plan::PartInfo;
 
 pub trait DynData: Send + Sync + 'static {
     fn as_any(&self) -> &dyn Any;
 }
 
-#[derive(Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct FileInfo {
     pub path: String,
     pub size: usize,
@@ -32,6 +33,7 @@ pub struct FileInfo {
     pub compress_alg: Option<CompressAlgorithm>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SplitInfo {
     pub file: Arc<FileInfo>,
     pub seq_in_file: usize,
@@ -39,6 +41,20 @@ pub struct SplitInfo {
     pub size: usize,
     pub num_file_splits: usize,
     pub format_info: Option<Arc<dyn DynData>>,
+}
+
+#[typetag::serde(name = "stage_file_partition")]
+impl PartInfo for SplitInfo {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn equals(&self, info: &Box<dyn PartInfo>) -> bool {
+        match info.as_any().downcast_ref::<SplitInfo>() {
+            None => false,
+            Some(other) => self == other,
+        }
+    }
 }
 
 impl Debug for SplitInfo {

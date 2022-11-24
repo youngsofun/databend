@@ -33,6 +33,8 @@ futures = "0.3.24"
 futures-util = "0.3.24"
 opendal = { version = "0.19", features = ["compress"] }
 parking_lot = "0.12.1"
+serde = { workspace = true }
+typetag = "0.2.3"
 serde_json = { workspace = true }
 similar-asserts = "1.4.2"
 tracing = "0.1.36"
