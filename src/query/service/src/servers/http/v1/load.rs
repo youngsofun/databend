@@ -36,6 +36,7 @@ use poem::Request;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::mpsc::Sender;
+use tracing::info;
 
 use super::HttpQueryContext;
 use crate::interpreters::InterpreterFactory;
@@ -106,8 +107,13 @@ pub async fn streaming_load(
             let unquote =
                 std::str::from_utf8(remove_quote(value.as_bytes())).map_err(InternalServerError)?;
             let value = unescape_string(unquote).map_err(InternalServerError)?;
+            info!(
+                "streaming load request header: key={}, value={:?}",
+                key,
+                value.as_bytes()
+            );
             settings
-                .set_settings(key.to_string(), value, false)
+                .set_settings(key.to_string(), value.to_string(), false)
                 .map_err(InternalServerError)?
         }
     }

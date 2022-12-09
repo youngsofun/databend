@@ -38,6 +38,7 @@ fn parse_unescape() {
         vec!["a", "a"],
         vec!["abc", "abc"],
         vec!["\\x01", "\x01"],
+        vec!["\x01", "\x01"],
         vec!["\t\nabc", "\t\nabc"],
         vec!["\"\t\nabc\"", "\"\t\nabc\""],
         vec!["\"\\t\nabc\"", "\"\t\nabc\""],
