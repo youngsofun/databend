@@ -97,6 +97,9 @@ storages-common-table-meta = { path = "../storages/common/table-meta" }
 
 # Crates.io dependencies
 aho-corasick = { version = "0.7.20" }
+arrow-flight = {version = "34.0.0", features=["flight-sql-experimental"]}
+arrow-schema = {version = "34.0.0"}
+arrow-ipc= {version = "34.0.0"}
 async-channel = "1.7.1"
 async-stream = "0.3.3"
 async-trait = { version = "0.1.57", package = "async-trait-fn" }
@@ -126,6 +129,8 @@ parking_lot = "0.12.1"
 petgraph = "0.6.2"
 pin-project-lite = "0.2.9"
 poem = { version = "1", features = ["rustls", "multipart", "compression"] }
+prost = { version = "0.11", default-features = false }
+prost-derive = { version = "0.11", default-features = false }
 rand = "0.8.5"
 regex = "1.6.0"
 scopeguard = "1.1.0"
@@ -161,6 +166,7 @@ reqwest = { workspace = true }
 temp-env = "0.3.0"
 tempfile = "3.4.0"
 toml = { version = "0.7.3", default-features = false }
+tower = "0.4.13"
 url = "2.3.1"
 walkdir = "2.3.2"
 wiremock = "0.5.14"
