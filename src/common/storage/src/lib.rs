@@ -53,12 +53,14 @@ mod column_node;
 pub use column_node::ColumnNode;
 pub use column_node::ColumnNodes;
 
-mod parquet;
-pub use parquet::infer_schema_with_extension;
-pub use parquet::read_parquet_metas_in_parallel;
-pub use parquet::read_parquet_schema_async;
+mod parquet2;
+pub use parquet2::infer_schema_with_extension;
+pub use parquet2::read_parquet_metas_in_parallel;
+pub use parquet2::read_parquet_schema_async;
 
+pub mod parquet_v2;
 mod stage;
+
 pub use stage::init_stage_operator;
 pub use stage::StageFileInfo;
 pub use stage::StageFileStatus;

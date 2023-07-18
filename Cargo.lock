@@ -471,6 +471,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25187bbef474151a2e4ddec67b9e34bda5cbfba292dc571392fa3a1f71ff5a82"
 dependencies = [
  "bitflags 2.3.1",
+ "serde",
 ]
 
 [[package]]
@@ -1817,6 +1818,7 @@ dependencies = [
 name = "common-catalog"
 version = "0.1.0"
 dependencies = [
+ "arrow-schema",
  "async-backtrace",
  "async-trait",
  "chrono",
@@ -1835,6 +1837,7 @@ dependencies = [
  "dyn-clone",
  "goldenfile",
  "parking_lot 0.12.1",
+ "parquet",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -2659,6 +2662,7 @@ dependencies = [
  "log",
  "metrics",
  "opendal",
+ "parquet",
  "regex",
  "reqwest",
  "serde",
@@ -2863,6 +2867,36 @@ dependencies = [
  "common-storage",
  "futures",
  "opendal",
+ "serde",
+ "storages-common-index",
+ "storages-common-pruner",
+ "storages-common-table-meta",
+ "tracing",
+ "typetag",
+]
+
+[[package]]
+name = "common-storages-parquet-v2"
+version = "0.1.0"
+dependencies = [
+ "arrow-schema",
+ "async-backtrace",
+ "async-trait-fn",
+ "chrono",
+ "common-arrow",
+ "common-base",
+ "common-catalog",
+ "common-exception",
+ "common-expression",
+ "common-functions",
+ "common-meta-app",
+ "common-pipeline-core",
+ "common-pipeline-sources",
+ "common-sql",
+ "common-storage",
+ "futures",
+ "opendal",
+ "parquet",
  "serde",
  "storages-common-index",
  "storages-common-pruner",

@@ -68,6 +68,7 @@ members = [
     "src/query/storages/system",
     "src/query/storages/view",
     "src/query/storages/parquet",
+    "src/query/storages/parquet_v2",
     "src/query/storages/result_cache",
     "src/query/users",
     "src/query/ee-features/vacuum-handler",

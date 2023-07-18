@@ -12,15 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod data_source_info;
-mod parquet;
-mod parquet_read_options;
-mod parquet_rs;
-mod result_scan;
-mod stage;
+mod blocking;
+mod non_blocking;
+mod partition;
+mod read;
+mod table;
 
-pub use data_source_info::DataSourceInfo;
-pub use parquet::ParquetTableInfo;
-pub use parquet_read_options::ParquetReadOptions;
-pub use result_scan::ResultScanTableInfo;
-pub use stage::StageTableInfo;
+pub(crate) use table::arrow_to_table_schema;
+pub use table::ParquetTable;

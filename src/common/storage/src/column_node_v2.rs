@@ -15,8 +15,8 @@
 //! This module provides data structures for build column indexes.
 //! It's used by Fuse Engine and Parquet Engine.
 
-use arrow_schema::Field as ArrowField;
 use arrow_schema::DataType as ArrowType;
+use arrow_schema::Field as ArrowField;
 use arrow_schema::Schema as ArrowSchema;
 use common_exception::ErrorCode;
 use common_exception::Result;
@@ -54,7 +54,11 @@ impl ColumnNodesV2 {
     /// It's because the inner field can also be [`ArrowType::Struct`] or other nested types.
     /// If we don't dfs into it, the inner columns information will be lost.
     /// and we can not construct the arrow-parquet reader correctly.
-    fn traverse_fields_dfs(field: &ArrowField, is_nested: bool, leaf_id: &mut usize) -> ColumnNodeV2 {
+    fn traverse_fields_dfs(
+        field: &ArrowField,
+        is_nested: bool,
+        leaf_id: &mut usize,
+    ) -> ColumnNodeV2 {
         match &field.data_type() {
             ArrowType::Struct(inner_fields) => {
                 let mut child_column_nodes = Vec::with_capacity(inner_fields.len());

@@ -12,15 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod data_source_info;
-mod parquet;
-mod parquet_read_options;
-mod parquet_rs;
-mod result_scan;
-mod stage;
+mod deserialize;
+mod filter;
+mod project;
+mod reader;
 
-pub use data_source_info::DataSourceInfo;
-pub use parquet::ParquetTableInfo;
-pub use parquet_read_options::ParquetReadOptions;
-pub use result_scan::ResultScanTableInfo;
-pub use stage::StageTableInfo;
+pub use reader::DataReader;
+pub use reader::IndexedChunk;
+pub use reader::IndexedReaders;
+pub use reader::ParquetPartData;
+pub use reader::ParquetReader;
