@@ -45,6 +45,10 @@ pub use common_metrics::StorageMetricsLayer;
 
 mod runtime_layer;
 
+mod column_node_v2;
+pub use column_node_v2::ColumnNodeV2;
+pub use column_node_v2::ColumnNodesV2;
+
 mod column_node;
 pub use column_node::ColumnNode;
 pub use column_node::ColumnNodes;
