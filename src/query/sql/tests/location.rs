@@ -36,7 +36,7 @@ use common_meta_app::storage::StorageWebhdfsConfig;
 use common_meta_app::storage::STORAGE_GCS_DEFAULT_ENDPOINT;
 use common_meta_app::storage::STORAGE_IPFS_DEFAULT_ENDPOINT;
 use common_meta_app::storage::STORAGE_S3_DEFAULT_ENDPOINT;
-use common_sql::planner::binder::parse_uri_location;
+use common_sql::planner::binder::bind_uri_location;
 
 #[tokio::test]
 async fn test_parse_uri_location() -> Result<()> {
@@ -418,7 +418,7 @@ async fn test_parse_uri_location() -> Result<()> {
     ];
 
     for (name, mut input, expected) in cases {
-        let actual = parse_uri_location(&mut input).await?;
+        let actual = bind_uri_location(&mut input).await?;
         assert_eq!(expected, actual, "{}", name);
     }
 

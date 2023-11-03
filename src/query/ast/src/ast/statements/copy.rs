@@ -13,21 +13,17 @@
 // limitations under the License.
 
 use std::collections::BTreeMap;
-use std::collections::HashSet;
 use std::fmt::Display;
 use std::fmt::Formatter;
-use std::io::Error;
-use std::io::ErrorKind;
-use std::io::Result;
 
 use itertools::Itertools;
-use url::Url;
 
 use crate::ast::write_comma_separated_map;
 use crate::ast::write_comma_separated_quoted_list;
 use crate::ast::Hint;
 use crate::ast::Identifier;
 use crate::ast::Query;
+use crate::ast::UriLocation;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TableIdentifier {
@@ -252,160 +248,6 @@ impl Display for CopyIntoLocationSource {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Connection {
-    visited_keys: HashSet<String>,
-    conns: BTreeMap<String, String>,
-}
-
-impl Connection {
-    pub fn new(conns: BTreeMap<String, String>) -> Self {
-        Self {
-            visited_keys: HashSet::new(),
-            conns,
-        }
-    }
-
-    pub fn mask(&self) -> Self {
-        let mut conns = BTreeMap::new();
-        for k in self.conns.keys() {
-            conns.insert(k.to_string(), "********".to_string());
-        }
-        Self {
-            visited_keys: self.visited_keys.clone(),
-            conns,
-        }
-    }
-
-    pub fn get(&mut self, key: &str) -> Option<&String> {
-        self.visited_keys.insert(key.to_string());
-        self.conns.get(key)
-    }
-
-    pub fn check(&self) -> Result<()> {
-        let conn_keys = HashSet::from_iter(self.conns.keys().cloned());
-        let diffs: Vec<String> = conn_keys
-            .difference(&self.visited_keys)
-            .map(|x| x.to_string())
-            .collect();
-
-        if !diffs.is_empty() {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                format!(
-                    "connection params invalid: expected [{}], got [{}]",
-                    self.visited_keys
-                        .iter()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    diffs.join(",")
-                ),
-            ));
-        }
-        Ok(())
-    }
-}
-
-impl Display for Connection {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if !self.conns.is_empty() {
-            write!(f, " CONNECTION = ( ")?;
-            write_comma_separated_map(f, &self.conns)?;
-            write!(f, " )")?;
-        }
-        Ok(())
-    }
-}
-
-/// UriLocation (a.k.a external location) can be used in `INTO` or `FROM`.
-///
-/// For examples: `'s3://example/path/to/dir' CONNECTION = (AWS_ACCESS_ID="admin" AWS_SECRET_KEY="admin")`
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UriLocation {
-    pub protocol: String,
-    pub name: String,
-    pub path: String,
-    pub part_prefix: String,
-    pub connection: Connection,
-}
-
-impl UriLocation {
-    pub fn new(
-        protocol: String,
-        name: String,
-        path: String,
-        part_prefix: String,
-        conns: BTreeMap<String, String>,
-    ) -> Self {
-        Self {
-            protocol,
-            name,
-            path,
-            part_prefix,
-            connection: Connection::new(conns),
-        }
-    }
-
-    pub fn from_uri(
-        uri: String,
-        part_prefix: String,
-        conns: BTreeMap<String, String>,
-    ) -> common_exception::Result<Self> {
-        // fs location is not a valid url, let's check it in advance.
-        if let Some(path) = uri.strip_prefix("fs://") {
-            return Ok(UriLocation::new(
-                "fs".to_string(),
-                "".to_string(),
-                path.to_string(),
-                part_prefix,
-                BTreeMap::default(),
-            ));
-        }
-
-        let parsed = Url::parse(&uri)
-            .map_err(|e| common_exception::ErrorCode::BadArguments(format!("invalid uri {}", e)))?;
-
-        let protocol = parsed.scheme().to_string();
-
-        let name = parsed
-            .host_str()
-            .map(|hostname| {
-                if let Some(port) = parsed.port() {
-                    format!("{}:{}", hostname, port)
-                } else {
-                    hostname.to_string()
-                }
-            })
-            .ok_or(common_exception::ErrorCode::BadArguments("invalid uri"))?;
-
-        let path = if parsed.path().is_empty() {
-            "/".to_string()
-        } else {
-            parsed.path().to_string()
-        };
-
-        Ok(Self {
-            protocol,
-            name,
-            path,
-            part_prefix,
-            connection: Connection::new(conns),
-        })
-    }
-}
-
-impl Display for UriLocation {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "'{}://{}{}'", self.protocol, self.name, self.path)?;
-        if !self.part_prefix.is_empty() {
-            write!(f, " LOCATION_PREFIX = '{}'", self.part_prefix)?;
-        }
-        write!(f, "{}", self.connection.mask())?;
-        Ok(())
-    }
-}
-
 /// StageLocation (a.k.a internal and external stage) can be used
 /// in `INTO` or `FROM`.
 ///
@@ -420,6 +262,11 @@ impl Display for UriLocation {
 pub enum FileLocation {
     Stage(String),
     Uri(UriLocation),
+}
+
+pub enum FileLocationNoConnection {
+    Stage(String),
+    Uri(String),
 }
 
 impl Display for FileLocation {

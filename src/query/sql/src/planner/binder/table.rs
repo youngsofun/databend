@@ -21,7 +21,6 @@ use std::sync::Arc;
 use async_recursion::async_recursion;
 use chrono::TimeZone;
 use chrono::Utc;
-use common_ast::ast::Connection;
 use common_ast::ast::Expr;
 use common_ast::ast::FileLocation;
 use common_ast::ast::Identifier;
@@ -35,7 +34,6 @@ use common_ast::ast::Statement;
 use common_ast::ast::TableAlias;
 use common_ast::ast::TableReference;
 use common_ast::ast::TimeTravelPoint;
-use common_ast::ast::UriLocation;
 use common_ast::parser::parse_sql;
 use common_ast::parser::tokenize_sql;
 use common_ast::Dialect;
@@ -496,13 +494,6 @@ impl Binder {
         options: &SelectStageOptions,
         alias: &Option<TableAlias>,
     ) -> Result<(SExpr, BindContext)> {
-        let location = match location {
-            FileLocation::Uri(uri) => FileLocation::Uri(UriLocation {
-                connection: Connection::new(options.connection.clone()),
-                ..uri.clone()
-            }),
-            _ => location.clone(),
-        };
         let (mut stage_info, path) = resolve_file_location(&self.ctx, &location).await?;
         if let Some(f) = &options.file_format {
             stage_info.file_format_params = match StageFileFormatType::from_str(f) {

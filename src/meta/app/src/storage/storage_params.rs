@@ -19,6 +19,8 @@ use std::fmt::Formatter;
 use serde::Deserialize;
 use serde::Serialize;
 
+pub const STDIN_FD: &str = "/dev/fd/0";
+
 /// Storage params which contains the detailed storage info.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]

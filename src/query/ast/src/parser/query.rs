@@ -22,16 +22,17 @@ use pratt::Associativity;
 use pratt::PrattParser;
 use pratt::Precedence;
 
-use super::stage::file_location;
 use super::stage::select_stage_option;
 use crate::ast::*;
 use crate::input::Input;
 use crate::input::WithSpan;
 use crate::parser::expr::*;
+use crate::parser::stage::file_location_no_connection;
 use crate::parser::statement::hint;
 use crate::parser::token::*;
 use crate::rule;
 use crate::util::*;
+use crate::ErrorKind;
 
 pub fn query(i: Input) -> IResult<Query> {
     context(
@@ -574,7 +575,7 @@ pub enum TableReferenceElement {
     Group(TableReference),
     Stage {
         location: FileLocation,
-        options: Vec<SelectStageOption>,
+        options: SelectStageOptions,
         alias: Option<TableAlias>,
     },
 }
@@ -665,19 +666,33 @@ pub fn table_reference_element(i: Input) -> IResult<WithSpan<TableReferenceEleme
         },
         |(_, table_ref, _)| TableReferenceElement::Group(table_ref),
     );
-    let aliased_stage = map(
+    let aliased_stage = map_res(
         rule! {
-            #file_location ~  ( "(" ~ (#select_stage_option ~ ","?)* ~ ^")" )? ~ #table_alias?
+            #file_location_no_connection ~  ( "(" ~ (#select_stage_option ~ ","?)* ~ ^")" )? ~ #table_alias?
         },
         |(location, options, alias)| {
             let options = options
                 .map(|(_, options, _)| options.into_iter().map(|(option, _)| option).collect())
                 .unwrap_or_default();
-            TableReferenceElement::Stage {
+            let mut options = SelectStageOptions::from(options);
+            let location = match (location, &mut options.connection.is_empty()) {
+                (FileLocationNoConnection::Stage(loc), true) => FileLocation::Stage(loc),
+                (FileLocationNoConnection::Stage(_), false) => {
+                    return Err(ErrorKind::Other("unexpect option connection for stage"));
+                }
+                (FileLocationNoConnection::Uri(loc), _) => {
+                    let connection = std::mem::take(&mut options.connection);
+                    FileLocation::Uri(
+                        UriLocation::parse(loc, "".to_string(), connection)
+                            .map_err(|_| ErrorKind::Other("invalid uri"))?,
+                    )
+                }
+            };
+            Ok(TableReferenceElement::Stage {
                 location,
                 alias,
                 options,
-            }
+            })
         },
     );
 
@@ -769,15 +784,12 @@ impl<'a, I: Iterator<Item = WithSpan<'a, TableReferenceElement>>> PrattParser<I>
                 location,
                 options,
                 alias,
-            } => {
-                let options = SelectStageOptions::from(options);
-                TableReference::Location {
-                    span: transform_span(input.span.0),
-                    location,
-                    options,
-                    alias,
-                }
-            }
+            } => TableReference::Location {
+                span: transform_span(input.span.0),
+                location,
+                options,
+                alias,
+            },
             _ => unreachable!(),
         };
         Ok(table_ref)

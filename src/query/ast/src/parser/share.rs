@@ -27,7 +27,7 @@ pub fn share_endpoint_uri_location(i: Input) -> IResult<UriLocation> {
             #literal_string
         },
         |location| {
-            UriLocation::from_uri(location, "".to_string(), BTreeMap::new())
+            UriLocation::parse(location, "".to_string(), BTreeMap::new())
                 .map_err(|_| ErrorKind::Other("invalid uri"))
         },
     )(i)

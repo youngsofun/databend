@@ -16,7 +16,6 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use common_ast::ast::CreateStageStmt;
-use common_ast::ast::UriLocation;
 use common_exception::ErrorCode;
 use common_exception::Result;
 use common_meta_app::principal::FileFormatOptionsAst;
@@ -26,7 +25,7 @@ use common_meta_app::principal::StageInfo;
 use common_storage::init_operator;
 
 use super::super::copy_into_table::resolve_stage_location;
-use crate::binder::location::parse_uri_location;
+use crate::binder::location::bind_uri_location;
 use crate::binder::Binder;
 use crate::plans::CreateStagePlan;
 use crate::plans::Plan;
@@ -74,17 +73,9 @@ impl Binder {
                 }
             }
             Some(uri) => {
-                let mut uri = UriLocation {
-                    protocol: uri.protocol.clone(),
-                    name: uri.name.clone(),
-                    path: uri.path.clone(),
-                    part_prefix: uri.part_prefix.clone(),
-                    connection: uri.connection.clone(),
-                };
+                let stage_storage = bind_uri_location(&uri.storage_params).await?;
 
-                let (stage_storage, path) = parse_uri_location(&mut uri).await?;
-
-                if !path.ends_with('/') {
+                if !uri.path.ends_with('/') {
                     return Err(ErrorCode::SyntaxException(
                         "URL's path must ends with `/` when do CREATE STAGE",
                     ));
@@ -97,7 +88,7 @@ impl Binder {
                     ))
                 })?;
 
-                StageInfo::new_external_stage(stage_storage, &path).with_stage_name(stage_name)
+                StageInfo::new_external_stage(stage_storage, &uri.path).with_stage_name(stage_name)
             }
         };
 

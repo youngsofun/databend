@@ -47,7 +47,6 @@ use common_ast::ast::Statement;
 use common_ast::ast::TableReference;
 use common_ast::ast::TruncateTableStmt;
 use common_ast::ast::UndropTableStmt;
-use common_ast::ast::UriLocation;
 use common_ast::ast::VacuumDropTableStmt;
 use common_ast::ast::VacuumTableStmt;
 use common_ast::parser::parse_sql;
@@ -81,7 +80,7 @@ use storages_common_table_meta::table::OPT_KEY_STORAGE_PREFIX;
 use storages_common_table_meta::table::OPT_KEY_TABLE_ATTACHED_DATA_URI;
 use storages_common_table_meta::table::OPT_KEY_TABLE_COMPRESSION;
 
-use crate::binder::location::parse_uri_location;
+use crate::binder::location::bind_uri_location;
 use crate::binder::scalar::ScalarBinder;
 use crate::binder::Binder;
 use crate::binder::ColumnBindingBuilder;
@@ -409,14 +408,7 @@ impl Binder {
 
         let (storage_params, part_prefix) = match uri_location {
             Some(uri) => {
-                let mut uri = UriLocation {
-                    protocol: uri.protocol.clone(),
-                    name: uri.name.clone(),
-                    path: uri.path.clone(),
-                    part_prefix: uri.part_prefix.clone(),
-                    connection: uri.connection.clone(),
-                };
-                let (sp, _) = parse_uri_location(&mut uri).await?;
+                let sp = bind_uri_location(&uri.storage_params).await?;
 
                 // create a temporary op to check if params is correct
                 DataOperator::try_create(&sp).await?;
@@ -635,7 +627,7 @@ impl Binder {
 
         let mut uri = stmt.uri_location.clone();
         uri.path = root;
-        let (sp, _) = parse_uri_location(&mut uri).await?;
+        let sp = bind_uri_location(&uri.storage_params).await?;
 
         // create a temporary op to check if params is correct
         DataOperator::try_create(&sp).await?;

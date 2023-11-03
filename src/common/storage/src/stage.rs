@@ -21,6 +21,7 @@ use common_exception::Result;
 use common_meta_app::principal::StageInfo;
 use common_meta_app::principal::StageType;
 use common_meta_app::principal::UserIdentity;
+use common_meta_app::storage::STDIN_FD;
 use futures::TryStreamExt;
 use opendal::EntryMode;
 use opendal::Metadata;
@@ -315,8 +316,6 @@ fn blocking_list_files_with_pattern(
     }
     Ok(files)
 }
-
-pub const STDIN_FD: &str = "/dev/fd/0";
 
 fn stdin_stage_info() -> Result<StageFileInfo> {
     Ok(StageFileInfo {

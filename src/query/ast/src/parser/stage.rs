@@ -18,6 +18,7 @@ use nom::branch::alt;
 use nom::combinator::map;
 
 use crate::ast::FileLocation;
+use crate::ast::FileLocationNoConnection;
 use crate::ast::SelectStageOption;
 use crate::ast::UriLocation;
 use crate::input::Input;
@@ -160,6 +161,17 @@ pub fn file_location(i: Input) -> IResult<FileLocation> {
     ))(i)
 }
 
+pub fn file_location_no_connection(i: Input) -> IResult<FileLocationNoConnection> {
+    alt((
+        map_res(literal_string, |location| {
+            Ok(FileLocationNoConnection::Uri(location))
+        }),
+        map_res(at_string, |location| {
+            Ok(FileLocationNoConnection::Stage(location))
+        }),
+    ))(i)
+}
+
 pub fn stage_location(i: Input) -> IResult<String> {
     map_res(file_location, |location| match location {
         FileLocation::Stage(s) => Ok(s),
@@ -204,7 +216,7 @@ pub fn string_location(i: Input) -> IResult<FileLocation> {
                 let mut conns = connection_opts.map(|v| v.2).unwrap_or_default();
                 conns.extend(credentials_opts.map(|v| v.2).unwrap_or_default());
 
-                let uri = UriLocation::from_uri(location, part_prefix, conns)
+                let uri = UriLocation::parse(location, part_prefix, conns)
                     .map_err(|_| ErrorKind::Other("invalid uri"))?;
                 Ok(FileLocation::Uri(uri))
             }

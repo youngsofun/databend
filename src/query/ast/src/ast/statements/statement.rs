@@ -251,34 +251,7 @@ pub struct StatementMsg {
 
 impl Statement {
     pub fn to_mask_sql(&self) -> String {
-        match self {
-            Statement::CopyIntoTable(copy) => {
-                let mut copy_clone = copy.clone();
-
-                if let CopyIntoTableSource::Location(FileLocation::Uri(location)) =
-                    &mut copy_clone.src
-                {
-                    location.connection = location.connection.mask()
-                }
-                format!("{}", Statement::CopyIntoTable(copy_clone))
-            }
-            Statement::CopyIntoLocation(copy) => {
-                let mut copy_clone = copy.clone();
-
-                if let FileLocation::Uri(location) = &mut copy_clone.dst {
-                    location.connection = location.connection.mask()
-                }
-                format!("{}", Statement::CopyIntoLocation(copy_clone))
-            }
-            Statement::CreateStage(stage) => {
-                let mut stage_clone = stage.clone();
-                if let Some(location) = &mut stage_clone.location {
-                    location.connection = location.connection.mask()
-                }
-                format!("{}", Statement::CreateStage(stage_clone))
-            }
-            _ => format!("{}", self),
-        }
+        format!("{}", self)
     }
 }
 

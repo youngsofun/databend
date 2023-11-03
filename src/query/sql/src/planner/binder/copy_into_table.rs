@@ -55,7 +55,7 @@ use indexmap::IndexMap;
 use log::debug;
 use parking_lot::RwLock;
 
-use crate::binder::location::parse_uri_location;
+use crate::binder::location::bind_uri_location;
 use crate::binder::select::MaxColumnPosition;
 use crate::binder::Binder;
 use crate::plans::CopyIntoTableMode;
@@ -560,8 +560,9 @@ pub async fn resolve_file_location(
 ) -> Result<(StageInfo, String)> {
     match location.clone() {
         FileLocation::Stage(location) => resolve_stage_location(ctx, &location).await,
-        FileLocation::Uri(mut uri) => {
-            let (storage_params, path) = parse_uri_location(&mut uri).await?;
+        FileLocation::Uri(uri) => {
+            let path = uri.path.clone();
+            let storage_params = bind_uri_location(&uri.storage_params).await?;
             if !storage_params.is_secure() && !GlobalConfig::instance().storage.allow_insecure {
                 Err(ErrorCode::StorageInsecure(
                     "copy from insecure storage is not allowed",
