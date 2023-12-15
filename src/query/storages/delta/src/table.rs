@@ -245,7 +245,7 @@ impl DeltaTable {
                     output,
                     output_schema.clone(),
                     parquet_reader.clone(),
-                    partition_fields.iter().copied().collect(),
+                    partition_fields.iter().copied().cloned().collect(),
                 )
             },
             max_threads.max(1),
@@ -363,10 +363,45 @@ fn get_pushdown_without_partition_columns(
     let mapping = get_shift_mapping(partition_columns, num_columns);
     match pushdown.projection {
         None => {}
-        Some(Projection::InnerColumns(columns)) => {}
+        Some(Projection::InnerColumns(map)) => {}
         Some(Projection::Columns(columns)) => {}
     }
-    new_pushdown
+    todo!("get_pushdown_without_partition_columns")
+}
+
+fn shift_projection_index(field_index: FieldIndex, partition_columns: &[FieldIndex]) -> Option<Result<FieldIndex>> {
+    let mut sub = 0;
+    // most of the time, there a few partition columns, so let`s keep it simple.
+    for col in partition_columns {
+        if field_index == *col {
+            return None;
+        }
+        if field_index > *col {
+            sub += 1;
+        }
+    }
+    if field_index < sub {
+        Some(Err(ErrorCode::BadArguments(format!(
+            "bug: field_index: {}, partition_columns: {:?}",
+            field_index, partition_columns
+        ))))
+    } else {
+        Some(Ok(field_index - sub))
+    }
+}
+fn shift_projection(mut prj: Projection, partition_columns: &[FieldIndex]) {
+    let f = |prc| {
+        shift_projection_index(prc, partition_columns).unwrap()
+    };
+    match prj {
+        Projection::InnerColumns(mut map) => {
+            map = map.iter().filter_map(|(i, columns)| shift_projection_index(*i, partition_columns)).collect()?
+            }
+        }
+        Projection::Columns(mut columns) => {
+            columns = columns.iter().filter_map(|i| shift_projection_index(*i, partition_columns)).collect()?
+        }
+    }
 }
 
 fn get_shift_mapping(
