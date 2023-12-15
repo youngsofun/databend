@@ -18,6 +18,7 @@
 
 mod dal;
 mod partition;
+mod partition_values;
 mod table;
 mod table_source;
 

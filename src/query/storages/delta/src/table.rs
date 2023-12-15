@@ -18,8 +18,6 @@ use std::sync::Arc;
 
 use arrow_schema::Schema as ArrowSchema;
 use async_trait::async_trait;
-use common_arrow::arrow::datatypes::Field as Arrow2Field;
-use common_arrow::arrow::datatypes::Schema as Arrow2Schema;
 use common_catalog::catalog::StorageDescription;
 use common_catalog::plan::DataSourcePlan;
 use common_catalog::plan::ParquetReadOptions;
@@ -27,6 +25,7 @@ use common_catalog::plan::PartInfo;
 use common_catalog::plan::PartStatistics;
 use common_catalog::plan::Partitions;
 use common_catalog::plan::PartitionsShuffleKind;
+use common_catalog::plan::Projection;
 use common_catalog::plan::PushDownInfo;
 use common_catalog::table::Table;
 use common_catalog::table_args::TableArgs;
@@ -34,6 +33,8 @@ use common_catalog::table_context::TableContext;
 use common_exception::ErrorCode;
 use common_exception::Result;
 use common_expression::DataSchema;
+use common_expression::FieldIndex;
+use common_expression::TableField;
 use common_expression::TableSchema;
 use common_meta_app::schema::TableInfo;
 use common_meta_app::storage::StorageParams;
@@ -47,12 +48,16 @@ use deltalake::kernel::Add;
 use deltalake::logstore::default_logstore::DefaultLogStore;
 use deltalake::logstore::LogStoreConfig;
 use deltalake::DeltaTableConfig;
+use serde::Deserialize;
+use serde::Serialize;
+use storages_common_table_meta::table::OPT_KEY_ENGINE_META;
 use tokio::sync::OnceCell;
 use url::Url;
 
 // use object_store_opendal::OpendalStore;
 use crate::dal::OpendalStore;
 use crate::partition::DeltaPartInfo;
+use crate::partition_values::get_partition_values;
 use crate::table_source::DeltaTableSource;
 
 pub const DELTA_ENGINE: &str = "DELTA";
@@ -175,6 +180,22 @@ impl DeltaTable {
         let max_threads = std::cmp::min(parts_len, max_threads);
 
         let table_schema = self.schema();
+        let partition_fields = self.get_partition_fields()?;
+        let num_partition_fields = table_schema
+            .fields()
+            .iter()
+            .filter(|field| !self.meta.partition_columns.contains(&field.name))
+            .map(|field| field.clone())
+            .collect();
+        let table_schema = Arc::new(TableSchema::new(num_partition_fields));
+        // let table_schema = table_schema.project(&plan.push_downs, &partition_fields)?;
+        // let num_table_schema.fields() {
+        //     if self.meta.partition_columns.contains(&field.name) {
+        //         partition_fields.push(field.clone());
+        //     } else {
+        //         non_partition_fields.push(field.clone());
+        //     }
+        // }
         let arrow_schema = table_schema.to_arrow();
         let arrow_fields = arrow_schema
             .fields
@@ -224,6 +245,7 @@ impl DeltaTable {
                     output,
                     output_schema.clone(),
                     parquet_reader.clone(),
+                    partition_fields.iter().copied().collect(),
                 )
             },
             max_threads.max(1),
@@ -241,6 +263,7 @@ impl DeltaTable {
 
         let mut read_rows = 0;
         let mut read_bytes = 0;
+        let partition_fields = self.get_partition_fields()?;
 
         let adds = table.get_state().files();
         let total_files = adds.len();
@@ -255,16 +278,18 @@ impl DeltaTable {
                             add.path
                         ))
                     })?;
+                let partition_values = get_partition_values(add, &partition_fields[..])?;
                 read_rows += stats.num_records as usize;
                 read_bytes += add.size as usize;
                 Ok(Arc::new(
-                    Box::new(DeltaPartInfo::Parquet(ParquetPart::ParquetFiles(
+                    Box::new(DeltaPartInfo{
+                        partition_values,
+                        data: ParquetPart::ParquetFiles(
                         ParquetFilesPart {
                             files: vec![(add.path.clone(), add.size as u64)],
                             estimated_uncompressed_size: add.size as u64, // This field is not used here.
                         },
-                    ))) as Box<dyn PartInfo>,
-                ))
+                    )}) as Box<dyn PartInfo>))
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -325,4 +350,37 @@ impl Table for DeltaTable {
     fn support_prewhere(&self) -> bool {
         true
     }
+}
+
+fn get_pushdown_without_partition_columns(
+    mut pushdown: PushDownInfo,
+    mut partition_columns: Vec<FieldIndex>,
+    num_columns: usize,
+) -> Result<PushDownInfo> {
+    if partition_columns.is_empty() {
+        return Ok(pushdown);
+    }
+    let mapping = get_shift_mapping(partition_columns, num_columns);
+    match pushdown.projection {
+        None => {}
+        Some(Projection::InnerColumns(columns)) => {}
+        Some(Projection::Columns(columns)) => {}
+    }
+    new_pushdown
+}
+
+fn get_shift_mapping(
+    mut partition_columns: Vec<FieldIndex>,
+    num_columns: usize,
+) -> Vec<FieldIndex> {
+    let mut mapping: Vec<_> = (0..num_columns).collect();
+    partition_columns.reverse();
+    let mut end = num_columns;
+    let mut sub = partition_columns.len();
+    for start in partition_columns {
+        (start..end).for_each(|i| mapping[i] -= sub);
+        end = start;
+        sub -= 1;
+    }
+    mapping
 }

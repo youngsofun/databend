@@ -17,12 +17,14 @@ use std::sync::Arc;
 
 use common_base::base::Progress;
 use common_base::base::ProgressValues;
+use common_catalog::table::Table;
 use common_catalog::table_context::TableContext;
 use common_exception::ErrorCode;
 use common_exception::Result;
 use common_expression::DataBlock;
 use common_expression::DataSchema;
 use common_expression::DataSchemaRef;
+use common_expression::TableField;
 use common_pipeline_core::processors::Event;
 use common_pipeline_core::processors::OutputPort;
 use common_pipeline_core::processors::Processor;
@@ -47,6 +49,8 @@ pub struct DeltaTableSource {
     output_schema: DataSchemaRef,
     parquet_reader: Arc<ParquetRSFullReader>,
     stream: Option<ParquetRecordBatchStream<Reader>>,
+
+    partition_fields: Vec<TableField>,
 }
 
 impl DeltaTableSource {
@@ -55,6 +59,7 @@ impl DeltaTableSource {
         output: Arc<OutputPort>,
         output_schema: DataSchemaRef,
         parquet_reader: Arc<ParquetRSFullReader>,
+        partition_fields: Vec<TableField>,
     ) -> Result<ProcessorPtr> {
         let scan_progress = ctx.get_scan_progress();
         Ok(ProcessorPtr::create(Box::new(DeltaTableSource {
@@ -66,6 +71,7 @@ impl DeltaTableSource {
             stream: None,
             generated_data: None,
             is_finished: false,
+            partition_fields,
         })))
     }
 }
@@ -125,8 +131,9 @@ impl Processor for DeltaTableSource {
             // If `read_block` returns `None`, it means the stream is finished.
             // And we should try to build another stream (in next event loop).
         } else if let Some(part) = self.ctx.get_partition() {
-            match DeltaPartInfo::from_part(&part)? {
-                DeltaPartInfo::Parquet(ParquetPart::ParquetFiles(files)) => {
+            let part = DeltaPartInfo::from_part(&part)?;
+            match &part.data {
+                ParquetPart::ParquetFiles(files) => {
                     assert_eq!(files.files.len(), 1);
                     let stream = self
                         .parquet_reader
