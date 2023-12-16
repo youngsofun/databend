@@ -57,7 +57,7 @@ use url::Url;
 // use object_store_opendal::OpendalStore;
 use crate::dal::OpendalStore;
 use crate::partition::DeltaPartInfo;
-use crate::partition_values::get_partition_values;
+use crate::values::get_partition_values;
 use crate::table_source::DeltaTableSource;
 
 pub const DELTA_ENGINE: &str = "DELTA";
@@ -350,72 +350,4 @@ impl Table for DeltaTable {
     fn support_prewhere(&self) -> bool {
         true
     }
-}
-
-fn get_pushdown_without_partition_columns(
-    mut pushdown: PushDownInfo,
-    mut partition_columns: Vec<FieldIndex>,
-    num_columns: usize,
-) -> Result<PushDownInfo> {
-    if partition_columns.is_empty() {
-        return Ok(pushdown);
-    }
-    let mapping = get_shift_mapping(partition_columns, num_columns);
-    match pushdown.projection {
-        None => {}
-        Some(Projection::InnerColumns(map)) => {}
-        Some(Projection::Columns(columns)) => {}
-    }
-    todo!("get_pushdown_without_partition_columns")
-}
-
-fn shift_projection_index(field_index: FieldIndex, partition_columns: &[FieldIndex]) -> Option<Result<FieldIndex>> {
-    let mut sub = 0;
-    // most of the time, there a few partition columns, so let`s keep it simple.
-    for col in partition_columns {
-        if field_index == *col {
-            return None;
-        }
-        if field_index > *col {
-            sub += 1;
-        }
-    }
-    if field_index < sub {
-        Some(Err(ErrorCode::BadArguments(format!(
-            "bug: field_index: {}, partition_columns: {:?}",
-            field_index, partition_columns
-        ))))
-    } else {
-        Some(Ok(field_index - sub))
-    }
-}
-fn shift_projection(mut prj: Projection, partition_columns: &[FieldIndex]) {
-    let f = |prc| {
-        shift_projection_index(prc, partition_columns).unwrap()
-    };
-    match prj {
-        Projection::InnerColumns(mut map) => {
-            map = map.iter().filter_map(|(i, columns)| shift_projection_index(*i, partition_columns)).collect()?
-            }
-        }
-        Projection::Columns(mut columns) => {
-            columns = columns.iter().filter_map(|i| shift_projection_index(*i, partition_columns)).collect()?
-        }
-    }
-}
-
-fn get_shift_mapping(
-    mut partition_columns: Vec<FieldIndex>,
-    num_columns: usize,
-) -> Vec<FieldIndex> {
-    let mut mapping: Vec<_> = (0..num_columns).collect();
-    partition_columns.reverse();
-    let mut end = num_columns;
-    let mut sub = partition_columns.len();
-    for start in partition_columns {
-        (start..end).for_each(|i| mapping[i] -= sub);
-        end = start;
-        sub -= 1;
-    }
-    mapping
 }

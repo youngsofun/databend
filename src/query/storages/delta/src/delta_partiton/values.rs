@@ -97,7 +97,7 @@ pub(crate) fn str_to_scalar(value: &str, data_type: &DataType) -> Result<Scalar>
             }
         },
         _ => Err(ErrorCode::Unimplemented(format!(
-            "generate scalar failed, {:?}",
+            "can not use type {} as delta partition",
             data_type
         ))),
     }

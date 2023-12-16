@@ -21,5 +21,6 @@ mod partition;
 mod partition_values;
 mod table;
 mod table_source;
+mod delta_partiton;
 
 pub use table::DeltaTable;
