@@ -72,6 +72,15 @@ impl DataBlock {
                         .map(|block| &block.get_by_offset(i).data_type)
                         .all_equal()
                 );
+                if let Value::Scalar(v0) = &blocks[0].get_by_offset(i).value {
+                    let v0 = Value::Scalar(v0.clone());
+                    if blocks.iter().all(|b| b.get_by_offset(i).value == v0) {
+                        return Ok(BlockEntry::new(
+                            blocks[0].get_by_offset(i).data_type.clone(),
+                            v0,
+                        ));
+                    }
+                }
 
                 let columns_iter = blocks.iter().map(|block| {
                     let entry = &block.get_by_offset(i);
