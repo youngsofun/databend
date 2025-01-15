@@ -88,6 +88,7 @@ pub struct StderrConfig {
     pub on: bool,
     pub level: String,
     pub format: String,
+    pub prefix_filter: String,
 }
 
 impl Display for StderrConfig {
@@ -121,6 +122,7 @@ impl Default for StderrConfig {
 pub struct OTLPConfig {
     pub on: bool,
     pub level: String,
+    pub prefix_filter: String,
     pub endpoint: OTLPEndpointConfig,
 }
 
@@ -223,6 +225,7 @@ impl Default for StructLogConfig {
 pub struct TracingConfig {
     pub on: bool,
     pub capture_log_level: String,
+    pub prefix_filter: String,
     pub otlp: OTLPEndpointConfig,
 }
 
