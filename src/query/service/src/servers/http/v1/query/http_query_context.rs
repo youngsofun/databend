@@ -43,7 +43,7 @@ use crate::sessions::TableContextSettings;
 pub struct HttpQueryContext {
     pub session: Arc<Session>,
     /// Snapshot before request-body settings can change the execution tenant.
-    pub authenticated_tenant: Tenant,
+    pub(crate) authenticated_tenant: Tenant,
     /// Bound during HTTP authentication, before the context reaches a handler.
     pub(crate) authenticated_query: Option<Arc<HttpQuery>>,
     pub credential: Credential,
@@ -126,14 +126,13 @@ impl HttpQueryContext {
     pub(crate) fn authorize_query(&self) -> poem::Result<()> {
         if let Some(query) = &self.authenticated_query {
             self.check_node_id(&query.id)?;
-            if query.owner_tenant != self.authenticated_tenant || query.user_name != self.user_name
-            {
-                return Err(poem::Error::from_string(
-                    "Query ownership mismatch",
-                    StatusCode::UNAUTHORIZED,
-                ));
+            query.check_owner(self)?;
+            // Query credentials remain session-bound on every follow-up. Legacy
+            // credentials may inspect/cancel their own query across sessions;
+            // page/final handlers still enforce session ownership separately.
+            if matches!(&self.credential, Credential::QueryToken { .. }) {
+                query.check_client_session_id(&self.client_session_id)?;
             }
-            query.check_client_session_id(&self.client_session_id)?;
         }
         Ok(())
     }
@@ -149,6 +148,16 @@ impl HttpQueryContext {
     }
 
     pub(crate) fn check_query_access(&self, query: &Arc<HttpQuery>) -> poem::Result<()> {
+        // Preserve the middleware's missing-query result for ordinary credentials;
+        // do not operate on a query inserted after that authorization snapshot.
+        if self.authenticated_query.is_none()
+            && !matches!(&self.credential, Credential::QueryToken { .. })
+        {
+            return Err(poem::Error::from_string(
+                format!("Query ID {} not found on node {}", query.id, self.node_id),
+                StatusCode::NOT_FOUND,
+            ));
+        }
         if !self
             .authenticated_query
             .as_ref()

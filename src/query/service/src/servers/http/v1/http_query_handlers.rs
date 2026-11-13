@@ -18,10 +18,14 @@ use std::sync::Arc;
 use databend_common_ast::parser::mask_log_sql_secrets;
 use databend_common_ast::parser::mask_raw_sql_with_secrets;
 use databend_common_base::base::GlobalInstance;
+use databend_common_base::headers::HEADER_CLIENT_CAPABILITIES;
 use databend_common_base::headers::HEADER_QUERY_ID;
 use databend_common_base::headers::HEADER_QUERY_PAGE_ROWS;
 use databend_common_base::headers::HEADER_QUERY_STATE;
 use databend_common_base::headers::HEADER_QUERY_TOKEN;
+use databend_common_base::headers::HEADER_SESSION;
+use databend_common_base::headers::HEADER_SESSION_ID;
+use databend_common_base::headers::HEADER_TENANT;
 use databend_common_base::runtime::GLOBAL_MEM_STAT;
 use databend_common_base::runtime::MemStat;
 use databend_common_base::runtime::ParentMemStat;
@@ -69,6 +73,7 @@ use super::query::ExecuteStateKind;
 use super::query::HttpQuery;
 use super::query::HttpQueryRequest;
 use super::query::HttpQueryResponseInternal;
+use super::query::MaskedRequest;
 use super::query::ResponseState;
 use super::query::execute_state::ARROW_FEATURE_NEGOTIATION_VERSION;
 use super::query::execute_state::LEGACY_ARROW_RESULT_VERSION;
@@ -359,7 +364,8 @@ impl QueryResponse {
             );
             response.headers_mut().append(
                 http::header::ACCESS_CONTROL_EXPOSE_HEADERS,
-                HeaderValue::from_static("X-DATABEND-QUERY-ID, X-DATABEND-QUERY-TOKEN"),
+                HeaderValue::from_str(&format!("{HEADER_QUERY_ID}, {HEADER_QUERY_TOKEN}"))
+                    .expect("query header names are valid HTTP header values"),
             );
         }
         response
@@ -608,6 +614,7 @@ async fn query_state_handler(
     async {
         match ctx.get_query(&query_id)? {
             Some(query) => {
+                query.check_owner(ctx)?;
                 if let Some(reason) = query.check_closed() {
                     Ok(StateResponse::closed(&query_id, reason.reason).into_response())
                 } else {
@@ -636,6 +643,8 @@ async fn query_page_handler(
         return Err(query_id_not_found(&query_id, &ctx.node_id));
     };
 
+    query.check_owner(ctx)?;
+    query.check_client_session_id(&ctx.client_session_id)?;
     ctx.try_refresh_worksheet_session().await.ok();
 
     let query_mem_stat = query.query_mem_stat.clone();
@@ -729,63 +738,56 @@ pub(crate) async fn query_handler(
             .as_ref()
             .map(|s| format!("(client_session_id={s})"))
             .unwrap_or("".to_string());
+        // Masked once for all the logs of this request.
+        let masked_sql = mask_log_sql_secrets(&req.sql);
         info!(
             "New query request{}{}: {:?}",
             agent_info,
             client_session_id_info,
-            // `HttpQueryRequest`'s Debug masks the SQL and omits parameters.
-            req
+            // The Debug of a request masks the SQL and omits parameters.
+            MaskedRequest {
+                request: &req,
+                masked_sql: &masked_sql,
+            }
         );
         let sql = req.sql.clone();
 
         let http_query_manager = HttpQueryManager::instance();
         if ctx.is_query_id_from_client {
             if let Some(query) = http_query_manager.get_query(&ctx.query_id) {
-                return if query.user_name != ctx.user_name
-                    || query.owner_tenant != ctx.authenticated_tenant
-                    || query.client_session_id != ctx.client_session_id
-                {
-                    Err(poem::Error::from_string(
-                        format!(
-                            "fail to start query: query_id {} already exists",
-                            ctx.query_id
-                        ),
-                        StatusCode::BAD_REQUEST,
-                    ))
-                } else {
-                    info!("get retry to start query: {}", ctx.query_id);
-                    let mut resp = query.get_response_page(0).await.map_err(|err| {
-                        info!(
-                            "/query/{}/page/{} - get response page error (reason: {})",
-                            ctx.query_id,
-                            0,
-                            err.message()
-                        );
-                        poem::Error::from_string(
-                            format!("{}", err.message()),
-                            StatusCode::NOT_FOUND,
-                        )
-                    })?;
-                    // A retried submission must recover the original capability
-                    // if the first response was lost. Ordinary page retries do not.
+                query.check_owner(ctx)?;
+                info!("get retry to start query: {}", ctx.query_id);
+                let mut resp = query.get_response_page(0).await.map_err(|err| {
+                    info!(
+                        "/query/{}/page/{} - get response page error (reason: {})",
+                        ctx.query_id,
+                        0,
+                        err.message()
+                    );
+                    poem::Error::from_string(format!("{}", err.message()), StatusCode::NOT_FOUND)
+                })?;
+                // Recover the token after a lost submission response only for the
+                // originating session. Same-owner side-channel retries stay valid
+                // without disclosing the original session's credential.
+                if query.client_session_id == ctx.client_session_id {
                     resp.query_token = Some(query.query_token.clone());
-                    let encoding = ResponseEncoding {
-                        format: query_result_format,
-                        arrow_result_version: require_negotiated_arrow_result_version(
-                            &ctx.query_id,
-                            query_result_format,
-                            resp.state.arrow_result_version,
-                        )
-                        .map_err(HttpErrorCode::bad_request)?,
-                        arrow_features: resp.state.arrow_features.clone(),
-                    };
-                    Ok(QueryResponse::from_internal(
-                        ctx.query_id.clone(),
-                        resp,
-                        false,
-                        encoding,
-                    ))
+                }
+                let encoding = ResponseEncoding {
+                    format: query_result_format,
+                    arrow_result_version: require_negotiated_arrow_result_version(
+                        &ctx.query_id,
+                        query_result_format,
+                        resp.state.arrow_result_version,
+                    )
+                    .map_err(HttpErrorCode::bad_request)?,
+                    arrow_features: resp.state.arrow_features.clone(),
                 };
+                return Ok(QueryResponse::from_internal(
+                    ctx.query_id.clone(),
+                    resp,
+                    false,
+                    encoding,
+                ));
             };
         }
 
@@ -796,7 +798,8 @@ pub(crate) async fn query_handler(
 
         match HttpQuery::try_create(
             ctx,
-            req.clone(),
+            &req,
+            &masked_sql,
             arrow_result_version,
             arrow_features.clone(),
         )
@@ -809,7 +812,7 @@ pub(crate) async fn query_handler(
                 Ok(req.fail_to_start_sql(err).into_response())
             }
             Ok(mut query) => {
-                if let Err(err) = query.start_query(sql.clone(), req.params.clone()).await {
+                if let Err(err) = query.start_query(sql.clone(), req.params.take()).await {
                     let err = err.display_with_sql(&sql);
                     log_start_query_error(&err, &sql);
                     ctx.set_fail();
@@ -846,11 +849,7 @@ pub(crate) async fn query_handler(
                 };
                 info!(
                     "Initial response for query_id={}, state={:?}, rows={}, next_page={:?}, sql='{}'",
-                    query.id,
-                    resp.state,
-                    rows,
-                    next_page,
-                    mask_log_sql_secrets(&sql)
+                    query.id, resp.state, rows, next_page, masked_sql
                 );
                 query
                     .update_expire_time(false, resp.is_data_drained())
@@ -958,7 +957,7 @@ pub async fn heartbeat_handler(
     let mut nodes_to_forwards = vec![];
     for (node_id, queries) in body.node_to_queries {
         if node_id == local_id {
-            queries_to_remove.extend(HttpQueryManager::instance().on_heartbeat(queries));
+            queries_to_remove.extend(HttpQueryManager::instance().on_heartbeat(queries, ctx));
         } else if let Some(node) = ClusterDiscovery::instance()
             .find_node_by_id(&node_id)
             .await
@@ -996,6 +995,20 @@ pub async fn heartbeat_handler(
                 .expect("heartbeat request should contain auth header")
                 .to_owned(),
         );
+        // Preserve the caller's tenant and session identity on the destination
+        // node, including worksheet detection via the original User-Agent.
+        for name in [
+            HEADER_TENANT,
+            HEADER_CLIENT_CAPABILITIES,
+            HEADER_SESSION,
+            HEADER_SESSION_ID,
+            "cookie",
+            "user-agent",
+        ] {
+            if let Some(value) = req.headers().get(name) {
+                headers.insert(name, value.clone());
+            }
+        }
         for (node, body) in nodes_to_forwards {
             let uri = uri.clone();
             let method = method.clone();
@@ -1356,6 +1369,24 @@ mod tests {
 
         let _fixture = TestFixture::setup().await?;
         let ep = Route::new().nest("/v1", query_route());
+        let missing_basic = capture_context("Basic cm9vdDo=", false).await?;
+        let login = ep
+            .call(
+                Request::builder()
+                    .method(poem::http::Method::POST)
+                    .uri("/v1/session/login".parse()?)
+                    .header("authorization", "Basic cm9vdDo=")
+                    .header(HEADER_CLIENT_CAPABILITIES, "session_header")
+                    .header("content-type", "application/json")
+                    .body("{}"),
+            )
+            .await?;
+        assert_eq!(login.status(), StatusCode::OK);
+        let login: serde_json::Value = login.into_body().into_json().await?;
+        let session_token = login["tokens"]["session_token"].as_str().unwrap();
+        let missing_session = capture_context(&format!("Bearer {session_token}"), false).await?;
+        assert!(missing_basic.authenticated_query.is_none());
+        assert!(missing_session.authenticated_query.is_none());
         let original = submit(&ep, 2).await?;
         let basic = capture_context("Basic cm9vdDo=", false).await?;
         let capability = capture_context(&format!("Bearer {original}"), true).await?;
@@ -1405,10 +1436,27 @@ mod tests {
                 assert!(current.check_closed().is_none());
             }
         }
-        let mut unbound = basic.clone();
-        unbound.authenticated_query = None;
+        // Both credentials authenticated before the query was inserted. Preserve
+        // that not-found result on every endpoint instead of reporting bad auth
+        // or accessing a query that was not present during middleware lookup.
+        for ctx in [&missing_basic, &missing_session] {
+            for suffix in ["", "/page/0", "/final", "/kill"] {
+                let mut req = Request::builder()
+                    .uri(format!("/query/{}{suffix}", old_query.id).parse()?)
+                    .finish();
+                req.extensions_mut().insert(ctx.clone());
+                let response = handlers.call(req).await.err().unwrap();
+                assert_eq!(response.status(), StatusCode::NOT_FOUND);
+                assert!(current.check_closed().is_none());
+            }
+        }
+        let mut unbound_capability = capability.clone();
+        unbound_capability.authenticated_query = None;
         assert_eq!(
-            unbound.check_query_access(&current).unwrap_err().status(),
+            unbound_capability
+                .check_query_access(&current)
+                .unwrap_err()
+                .status(),
             StatusCode::UNAUTHORIZED
         );
 

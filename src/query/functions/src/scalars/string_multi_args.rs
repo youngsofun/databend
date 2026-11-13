@@ -34,7 +34,6 @@ use databend_common_expression::scalar_evaluator;
 use databend_common_expression::types::MutableBitmap;
 use databend_common_expression::types::NumberColumn;
 use databend_common_expression::types::array::ArrayColumnBuilder;
-use databend_common_expression::types::nullable::NullableColumn;
 use databend_common_expression::types::number::Int64Type;
 use databend_common_expression::types::number::NumberScalar;
 use databend_common_expression::types::string::StringDomain;
@@ -663,7 +662,7 @@ fn inner_regexp_extract(
                 }
                 Err(err) => {
                     ctx.set_error(builder.len(), err);
-                    builder.put_str("");
+                    StringType::push_default(&mut builder);
                     continue;
                 }
             }
@@ -1136,7 +1135,7 @@ fn regexp_substr_fn(args: &[Value<AnyType>], ctx: &mut EvalContext) -> Value<Any
     }
     match len {
         Some(_) => {
-            let col = NullableColumn::new_column(Column::String(builder.build()), validity.into());
+            let col = Column::String(builder.build()).wrap_nullable(Some(validity.into()));
             Value::Column(col)
         }
         _ => match validity.pop() {

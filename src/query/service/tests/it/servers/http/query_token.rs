@@ -627,6 +627,13 @@ async fn test_query_token_tenant_and_session_isolation() -> anyhow::Result<()> {
     assert_eq!(retry.status(), StatusCode::OK);
     let retry = decode_json(retry).await?;
     assert_eq!(retry.query_token.as_ref(), Some(token));
+    // Same-owner retries from another session remain compatible, but cannot
+    // recover the original session's query credential.
+    let mut other_session = headers.clone();
+    other_session.insert(HEADER_SESSION, client_session_header("another-session"));
+    let retry = request(&ep, Method::POST, "/v1/query", other_session, body.clone()).await;
+    assert_eq!(retry.status(), StatusCode::OK);
+    assert!(decode_json(retry).await?.query_token.is_none());
     let page = result.next_uri.as_ref().unwrap();
     // Tenant comes from the validated query capability when omitted.
     assert_eq!(
@@ -658,15 +665,10 @@ async fn test_query_token_tenant_and_session_isolation() -> anyhow::Result<()> {
         StatusCode::UNAUTHORIZED
     );
 
-    // Submission retries must not disclose the capability to a different
-    // tenant or client session, even after the original page has advanced.
-    let mut wrong_session = headers.clone();
-    wrong_session.insert(HEADER_SESSION, client_session_header("another-session"));
-    let retry = request(&ep, Method::POST, "/v1/query", wrong_session, body.clone()).await;
-    assert_eq!(retry.status(), StatusCode::BAD_REQUEST);
+    // Submission retries cannot disclose the token to another tenant.
     headers.insert(HEADER_TENANT, HeaderValue::from_static("another-tenant"));
     let retry = request(&ep, Method::POST, "/v1/query", headers, body).await;
-    assert_eq!(retry.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(retry.status(), StatusCode::UNAUTHORIZED);
 
     // Legacy Basic authentication must not disclose the new capability or
     // operate on this query from another tenant either.
