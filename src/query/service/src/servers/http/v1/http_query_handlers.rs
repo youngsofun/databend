@@ -341,6 +341,7 @@ impl QueryResponse {
                         .body(buf),
                     Err(err) => Response::builder()
                         .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .header(HEADER_QUERY_ID, id)
                         .body(err.to_string()),
                 }
             }
@@ -1308,12 +1309,75 @@ impl<'a> FromRequest<'a> for QueryResultFormat {
 
 #[cfg(test)]
 mod tests {
+    use databend_common_expression::DataField;
+    use databend_common_expression::types::DataType;
     use parking_lot::Mutex;
     use poem::Endpoint;
 
     use super::*;
     use crate::servers::http::v1::query::HttpQueryRequest;
     use crate::test_kits::TestFixture;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_arrow_encoding_error_keeps_query_credentials() -> anyhow::Result<()> {
+        let _fixture = TestFixture::setup().await?;
+        let ep = Route::new().nest("/v1", query_route());
+        let response = ep
+            .call(
+                Request::builder()
+                    .method(poem::http::Method::POST)
+                    .uri("/v1/query".parse()?)
+                    .header("authorization", "Basic cm9vdDo=")
+                    .header("content-type", "application/json")
+                    .body(r#"{"sql":"SELECT 1","pagination":{"wait_time_secs":5}}"#),
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let token = response.headers()[HEADER_QUERY_TOKEN].clone();
+        let body: serde_json::Value = response.into_body().into_json().await?;
+        let id = body["id"].as_str().unwrap();
+        let query = HttpQueryManager::instance().get_query(id).unwrap();
+        let mut internal = query.get_response_page(0).await?;
+        internal.query_token = Some(query.query_token.clone());
+        // A schema/column-count mismatch exercises the real Arrow encoder's
+        // error path without adding a failpoint or mocking serialization.
+        internal.state.schema = Arc::new(DataSchema::new(vec![
+            DataField::new("first", DataType::Boolean),
+            DataField::new("second", DataType::Boolean),
+        ]));
+        let response =
+            QueryResponse::from_internal(id.to_string(), internal, false, ResponseEncoding {
+                format: QueryResultFormat::Arrow,
+                arrow_result_version: Some(SERVER_MAX_ARROW_RESULT_VERSION),
+                arrow_features: None,
+            });
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.headers().get(HEADER_QUERY_TOKEN), Some(&token));
+        assert_eq!(
+            response.headers().get(HEADER_QUERY_ID),
+            Some(&HeaderValue::from_str(id)?)
+        );
+        assert_eq!(response.headers()[http::header::CACHE_CONTROL], "no-store");
+        let recovered_id = response.headers()[HEADER_QUERY_ID].to_str()?.to_string();
+        let recovered_token = response.headers()[HEADER_QUERY_TOKEN].to_str()?.to_string();
+        let error = response.into_body().into_string().await?;
+        assert!(error.contains("number of columns"), "{error}");
+        // The credentials from the failed response must still let the client
+        // terminate the retained query using its server-generated ID.
+        let response = ep
+            .call(
+                Request::builder()
+                    .method(poem::http::Method::POST)
+                    .uri(make_kill_uri(&recovered_id).parse()?)
+                    .header("authorization", format!("Bearer {recovered_token}"))
+                    .header("x-databend-auth-method", "query-token")
+                    .finish(),
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(query.check_closed().is_some());
+        Ok(())
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_authenticated_query_rejects_reused_id() -> anyhow::Result<()> {
