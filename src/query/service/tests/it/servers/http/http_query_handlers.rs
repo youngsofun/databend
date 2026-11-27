@@ -26,6 +26,9 @@ use base64::engine::general_purpose;
 use base64::prelude::*;
 use databend_common_base::base::get_free_tcp_port;
 use databend_common_base::headers::HEADER_CLIENT_CAPABILITIES;
+use databend_common_base::headers::HEADER_QUERY_ATTEMPT;
+use databend_common_base::headers::HEADER_QUERY_ID;
+use databend_common_base::headers::HEADER_QUERY_TOKEN;
 use databend_common_base::headers::HEADER_VERSION;
 use databend_common_config::UserAuthConfig;
 use databend_common_config::UserConfig;
@@ -2961,6 +2964,116 @@ async fn test_query_owner_with_sandbox_settings() -> anyhow::Result<()> {
     ] {
         let response = owner.do_request_raw(Method::GET, &uri).await?;
         assert_eq!(response.status(), StatusCode::OK, "{uri}");
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_query_attempt_recovery_does_not_execute_sql_again() -> anyhow::Result<()> {
+    let _fixture = TestFixture::setup().await?;
+    let ep = create_endpoint()?;
+    let (status, created) = post_sql_to_endpoint_new_session(
+        &ep,
+        "CREATE TABLE query_attempt_t (a INT)",
+        5,
+        HeaderMap::new(),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert!(created.error.is_none(), "{created:?}");
+
+    let mut request = TestHttpQueryRequest::new(serde_json::json!({
+        "sql": "INSERT INTO query_attempt_t VALUES (1)",
+        "pagination": {"wait_time_secs": 5},
+    }));
+    request
+        .headers
+        .insert(HEADER_QUERY_ID, "attempt-test".parse()?);
+    request.headers.insert(HEADER_QUERY_ATTEMPT, "1".parse()?);
+    let response = request.do_request_raw(Method::POST, "/v1/query").await?;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body: serde_json::Value = response.into_body().into_json().await?;
+    assert_eq!(
+        body["error"]["code"],
+        ErrorCode::QUERY_SUBMISSION_OUTCOME_UNKNOWN
+    );
+
+    request.headers.insert(HEADER_QUERY_ATTEMPT, "0".parse()?);
+    let response = request.do_request_raw(Method::POST, "/v1/query").await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let token = response.headers()[HEADER_QUERY_TOKEN].clone();
+    let first: TestQueryResponse = response.into_body().into_json().await?;
+    assert_eq!(first.state, ExecuteStateKind::Succeeded, "{first:?}");
+    assert!(first.session.is_some());
+
+    request.headers.insert(HEADER_QUERY_ATTEMPT, "2".parse()?);
+    let response = request.do_request_raw(Method::POST, "/v1/query").await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[HEADER_QUERY_TOKEN], token);
+    let recovered: TestQueryResponse = response.into_body().into_json().await?;
+    assert_eq!(recovered.id, first.id);
+    assert_eq!(recovered.state, first.state);
+    assert_eq!(recovered.next_uri, first.next_uri);
+    assert!(
+        recovered.session.is_some(),
+        "retry must resend session state"
+    );
+
+    let page = make_page_uri(&first.id, 0);
+    for attempt in [None, Some("2"), Some("malformed")] {
+        request.headers.remove(HEADER_QUERY_ATTEMPT);
+        if let Some(attempt) = attempt {
+            request
+                .headers
+                .insert(HEADER_QUERY_ATTEMPT, attempt.parse()?);
+        }
+        let response = request.do_request_raw(Method::GET, &page).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let result: TestQueryResponse = response.into_body().into_json().await?;
+        assert_eq!(result.next_uri, first.next_uri);
+    }
+
+    let final_uri = first.final_uri.as_ref().unwrap();
+    let response = request.do_request_raw(Method::POST, final_uri).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    request.headers.insert(HEADER_QUERY_ATTEMPT, "3".parse()?);
+    let response = request.do_request_raw(Method::POST, "/v1/query").await?;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body: serde_json::Value = response.into_body().into_json().await?;
+    assert_eq!(
+        body["error"]["code"],
+        ErrorCode::QUERY_SUBMISSION_OUTCOME_UNKNOWN
+    );
+
+    let (status, count) = post_sql_to_endpoint_new_session(
+        &ep,
+        "SELECT COUNT(*) FROM query_attempt_t",
+        5,
+        HeaderMap::new(),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(count.data, vec![vec![Some("1".to_string())]]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_query_attempt_rejects_invalid_start_metadata() -> anyhow::Result<()> {
+    let _fixture = TestFixture::setup().await?;
+    let mut request = TestHttpQueryRequest::new(serde_json::json!({"sql": "SELECT 1"}));
+    request.headers.insert(HEADER_QUERY_ATTEMPT, "0".parse()?);
+    let response = request.do_request_raw(Method::POST, "/v1/query").await?;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    request
+        .headers
+        .insert(HEADER_QUERY_ID, "invalid-attempt-test".parse()?);
+    for attempt in ["", "+0", "-1", "4294967296", "0,1"] {
+        request
+            .headers
+            .insert(HEADER_QUERY_ATTEMPT, attempt.parse()?);
+        let response = request.do_request_raw(Method::POST, "/v1/query").await?;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{attempt:?}");
     }
     Ok(())
 }

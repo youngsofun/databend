@@ -56,34 +56,79 @@ impl Display for CloseReason {
     }
 }
 
+enum QueryEntry {
+    Preparing,
+    Registered(Arc<HttpQuery>),
+}
+
+pub(crate) enum QueryStart {
+    Reserved(QueryReservation),
+    Existing(Arc<HttpQuery>),
+    Preparing,
+    Missing,
+}
+
+pub(crate) struct QueryReservation {
+    manager: Arc<HttpQueryManager>,
+    query_id: String,
+    registered: Option<Arc<HttpQuery>>,
+}
+
+impl QueryReservation {
+    pub(crate) fn start(
+        &mut self,
+        mut query: HttpQuery,
+        sql: String,
+        params: Option<serde_json::Value>,
+    ) -> Result<Arc<HttpQuery>> {
+        // No await between spawning execution and publishing the query.
+        query.start_query(sql, params)?;
+        Ok(self.register(query))
+    }
+
+    fn register(&mut self, query: HttpQuery) -> Arc<HttpQuery> {
+        debug_assert_eq!(query.id, self.query_id);
+        let query = Arc::new(query);
+        {
+            let mut queries = self.manager.queries.write();
+            let entry = queries.entries.get_mut(&self.query_id).unwrap();
+            debug_assert!(matches!(entry, QueryEntry::Preparing));
+            *entry = QueryEntry::Registered(query.clone());
+            queries.num_active_queries += 1;
+        }
+        self.registered = Some(query.clone());
+        self.manager.schedule_query_expiration(&query);
+        query
+    }
+}
+
+impl Drop for QueryReservation {
+    fn drop(&mut self) {
+        if let Some(query) = &self.registered {
+            // Don't let a retry advance pagination while the first handler is
+            // still collecting page 0. Cancellation must also release this gate.
+            query.finish_initial_response();
+        } else {
+            // Preparation failed or the request was canceled before execution was spawned.
+            let entry = self.manager.queries.write().entries.remove(&self.query_id);
+            debug_assert!(matches!(entry, Some(QueryEntry::Preparing)));
+        }
+    }
+}
+
 #[derive(Default)]
 struct Queries {
-    active: HashMap<String, Arc<HttpQuery>>,
+    entries: HashMap<String, QueryEntry>,
     num_active_queries: u64,
     last_query_end_at: Option<u64>,
 }
 
 impl Queries {
-    pub(crate) fn get(&self, query_id: &str) -> Option<Arc<HttpQuery>> {
-        self.active.get(query_id).cloned()
-    }
-
-    pub(crate) fn insert(&mut self, query: Arc<HttpQuery>) -> Result<()> {
-        let query_id = query.id.clone();
-        if self.active.contains_key(&query_id) {
-            let err = ErrorCode::BadArguments(format!(
-                "fail to start query: query_id {query_id} already exists"
-            ));
-            return Err(err);
-        } else {
-            self.num_active_queries += 1;
-            self.active.insert(query.id.clone(), query);
+    fn get(&self, query_id: &str) -> Option<Arc<HttpQuery>> {
+        match self.entries.get(query_id) {
+            Some(QueryEntry::Registered(query)) => Some(query.clone()),
+            _ => None,
         }
-        return Ok(());
-    }
-
-    pub(crate) fn remove(&mut self, query_id: &str) -> Option<Arc<HttpQuery>> {
-        self.active.remove(query_id)
     }
 
     pub(crate) fn close(
@@ -93,7 +138,7 @@ impl Queries {
         now: u64,
         ctx: Option<&HttpQueryContext>,
     ) -> poem::error::Result<(Option<Arc<HttpQuery>>, Option<ClientStateClosed>)> {
-        let q = self.active.get(query_id).cloned();
+        let q = self.get(query_id);
         if let Some(q) = q {
             // Authorize and mark closed under the same queries write lock. Only
             // the server-side timeout task closes queries without a request context.
@@ -156,19 +201,42 @@ impl HttpQueryManager {
     }
 
     pub(crate) fn get_query(self: &Arc<Self>, query_id: &str) -> Option<Arc<HttpQuery>> {
-        self.queries.read().get(query_id).map(|q| q.to_owned())
+        self.queries.read().get(query_id)
     }
 
-    #[async_backtrace::framed]
-    pub async fn add_query(self: &Arc<Self>, query: Arc<HttpQuery>) -> Result<Arc<HttpQuery>> {
-        self.queries.write().insert(query.clone())?;
+    pub(crate) fn reserve_query(
+        self: &Arc<Self>,
+        query_id: &str,
+        recover_only: bool,
+    ) -> QueryStart {
+        let mut queries = self.queries.write();
+        match queries.entries.get(query_id) {
+            Some(QueryEntry::Preparing) => QueryStart::Preparing,
+            Some(QueryEntry::Registered(query)) if query.initial_response_pending() => {
+                QueryStart::Preparing
+            }
+            Some(QueryEntry::Registered(query)) => QueryStart::Existing(query.clone()),
+            None if recover_only => QueryStart::Missing,
+            None => {
+                queries
+                    .entries
+                    .insert(query_id.to_owned(), QueryEntry::Preparing);
+                QueryStart::Reserved(QueryReservation {
+                    manager: self.clone(),
+                    query_id: query_id.to_owned(),
+                    registered: None,
+                })
+            }
+        }
+    }
 
+    fn schedule_query_expiration(self: &Arc<Self>, query: &Arc<HttpQuery>) {
         let self_clone = self.clone();
         let query_id_clone = query.id.clone();
 
         // downgrade to weak reference
         // it may cannot destroy with final or kill when we hold ref of Arc<HttpQuery>
-        let http_query_weak = Arc::downgrade(&query);
+        let http_query_weak = Arc::downgrade(query);
 
         GlobalControlRuntime::instance()
             .runtime()
@@ -193,14 +261,13 @@ impl HttpQueryManager {
                         }
                         TimeoutResult::Remove => {
                             let mut queries = self_clone.queries.write();
-                            queries.remove(&query_id_clone);
+                            queries.entries.remove(&query_id_clone);
                             log::info!("Query {query_id_clone} removed");
                             break;
                         }
                     }
                 }
             });
-        Ok(query)
     }
 
     #[async_backtrace::framed]

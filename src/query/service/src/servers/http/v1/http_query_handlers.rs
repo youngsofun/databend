@@ -18,6 +18,7 @@ use std::sync::Arc;
 use databend_common_ast::parser::mask_raw_sql_with_secrets;
 use databend_common_base::base::GlobalInstance;
 use databend_common_base::headers::HEADER_CLIENT_CAPABILITIES;
+use databend_common_base::headers::HEADER_QUERY_ATTEMPT;
 use databend_common_base::headers::HEADER_QUERY_ID;
 use databend_common_base::headers::HEADER_QUERY_PAGE_ROWS;
 use databend_common_base::headers::HEADER_QUERY_STATE;
@@ -42,6 +43,7 @@ use headers::Header;
 use headers::HeaderMapExt;
 use http::HeaderMap;
 use http::HeaderValue;
+use http::Method;
 use http::StatusCode;
 use itertools::Itertools;
 use log::error;
@@ -72,6 +74,7 @@ use super::query::ExecuteStateKind;
 use super::query::HttpQuery;
 use super::query::HttpQueryRequest;
 use super::query::HttpQueryResponseInternal;
+use super::query::QueryStart;
 use super::query::ResponseState;
 use super::query::execute_state::ARROW_FEATURE_NEGOTIATION_VERSION;
 use super::query::execute_state::LEGACY_ARROW_RESULT_VERSION;
@@ -605,10 +608,12 @@ async fn query_cancel_handler(
 #[poem::handler]
 async fn query_state_handler(
     ctx: &HttpQueryContext,
+    attempt: QueryAttempt,
     Path(query_id): Path<String>,
 ) -> PoemResult<Response> {
+    attempt.log_read_retry("poll", &query_id, None);
     ctx.check_node_id(&query_id)?;
-    let root = get_http_tracing_span("http::query_state_handler", ctx, &query_id);
+    let root = attempt.span("http::query_state_handler", ctx, &query_id);
 
     async {
         match ctx.get_query(&query_id)? {
@@ -634,8 +639,10 @@ async fn query_state_handler(
 async fn query_page_handler(
     ctx: &HttpQueryContext,
     query_result_format: QueryResultFormat,
+    attempt: QueryAttempt,
     Path((query_id, page_no)): Path<(String, usize)>,
 ) -> PoemResult<impl IntoResponse> {
+    attempt.log_read_retry("fetch_page", &query_id, Some(page_no));
     ctx.check_node_id(&query_id)?;
 
     let Some(query) = ctx.get_query(&query_id)? else {
@@ -690,7 +697,7 @@ async fn query_page_handler(
     };
 
     let query_page_handle = {
-        let root = get_http_tracing_span("http::query_page_handler", ctx, &query_id);
+        let root = attempt.span("http::query_page_handler", ctx, &query_id);
         let _t = SlowRequestLogTracker::new(ctx);
         query_page_handle.in_span(root)
     };
@@ -749,11 +756,18 @@ fn log_start_query_error(err: &ErrorCode, sql: &str) {
 
 #[poem::handler]
 #[async_backtrace::framed]
-pub(crate) async fn query_handler(
+async fn query_handler(
     ctx: &HttpQueryContext,
     query_result_format: QueryResultFormat,
+    attempt: QueryAttempt,
     Json(mut req): Json<HttpQueryRequest>,
 ) -> PoemResult<impl IntoResponse> {
+    if attempt.0.is_some() && (!ctx.is_query_id_from_client || ctx.query_id.is_empty()) {
+        return Err(HttpErrorCode::bad_request(ErrorCode::BadArguments(format!(
+            "{HEADER_QUERY_ATTEMPT} requires a non-empty {HEADER_QUERY_ID}"
+        )))
+        .into());
+    }
     let session = ctx.session.clone();
     let query_handle = async {
         let agent_info = ctx
@@ -767,47 +781,32 @@ pub(crate) async fn query_handler(
             .as_ref()
             .map(|s| format!("(client_session_id={s})"))
             .unwrap_or("".to_string());
-        info!(query_id = ctx.query_id; "New query request{}{}", agent_info, client_session_id_info);
-        let sql = req.sql.clone();
+        info!(query_id = ctx.query_id, attempt:? = attempt.0;
+            "New query request{}{}", agent_info, client_session_id_info);
 
         let http_query_manager = HttpQueryManager::instance();
-        if ctx.is_query_id_from_client {
-            if let Some(query) = http_query_manager.get_query(&ctx.query_id) {
-                query.check_owner(ctx)?;
-                info!("get retry to start query: {}", ctx.query_id);
-                let mut resp = query.get_response_page(0).await.map_err(|err| {
-                    info!(
-                        "/query/{}/page/{} - get response page error (reason: {})",
-                        ctx.query_id,
-                        0,
-                        err.message()
-                    );
-                    poem::Error::from_string(format!("{}", err.message()), StatusCode::NOT_FOUND)
-                })?;
-                // Recover the token after a lost submission response only for the
-                // originating session. Same-owner side-channel retries stay valid
-                // without disclosing the original session's credential.
-                if query.client_session_id == ctx.client_session_id {
-                    resp.query_token = Some(query.query_token.clone());
-                }
-                let encoding = ResponseEncoding {
-                    format: query_result_format,
-                    arrow_result_version: require_negotiated_arrow_result_version(
-                        &ctx.query_id,
-                        query_result_format,
-                        resp.state.arrow_result_version,
-                    )
-                    .map_err(HttpErrorCode::bad_request)?,
-                    arrow_features: resp.state.arrow_features.clone(),
-                };
-                return Ok(QueryResponse::from_internal(
-                    ctx.query_id.clone(),
-                    resp,
-                    false,
-                    encoding,
+        let recover_only = attempt.0.is_some_and(|n| n > 0);
+        let mut reservation = match http_query_manager.reserve_query(&ctx.query_id, recover_only) {
+            QueryStart::Reserved(reservation) => reservation,
+            QueryStart::Existing(query) => {
+                return recover_submitted_query(ctx, query_result_format, attempt, &query).await;
+            }
+            QueryStart::Preparing => {
+                return Ok(submission_outcome_unknown(
+                    ctx,
+                    attempt,
+                    "initial response is still pending",
                 ));
-            };
-        }
+            }
+            QueryStart::Missing => {
+                return Ok(submission_outcome_unknown(
+                    ctx,
+                    attempt,
+                    "no retained submission on this node",
+                ));
+            }
+        };
+        let sql = req.sql.clone();
 
         let arrow_result_version =
             negotiate_arrow_result_version(&req, query_result_format, ctx.user_agent.as_deref())
@@ -821,21 +820,15 @@ pub(crate) async fn query_handler(
                 ctx.set_fail();
                 Ok(req.fail_to_start_sql(err).into_response())
             }
-            Ok(mut query) => {
-                if let Err(err) = query.start_query(sql.clone(), req.params.take()).await {
-                    let err = err.display_with_sql(&sql);
-                    log_start_query_error(&err, &sql);
-                    ctx.set_fail();
-                    return Ok(req.fail_to_start_sql(err).into_response());
-                }
-
-                let query = Arc::new(query);
-                let query = match http_query_manager.add_query(query.clone()).await {
-                    Err(err) => {
-                        query.kill(err.clone()).await;
-                        return Err(HttpErrorCode::bad_request(err).into());
-                    }
+            Ok(query) => {
+                let query = match reservation.start(query, sql.clone(), req.params.take()) {
                     Ok(query) => query,
+                    Err(err) => {
+                        let err = err.display_with_sql(&sql);
+                        log_start_query_error(&err, &sql);
+                        ctx.set_fail();
+                        return Ok(req.fail_to_start_sql(err).into_response());
+                    }
                 };
                 let mut resp = get_initial_query_response(ctx, &query, &sql).await?;
 
@@ -872,7 +865,7 @@ pub(crate) async fn query_handler(
     };
 
     let query_handle = {
-        let root = get_http_tracing_span("http::query_handler", ctx, &ctx.query_id);
+        let root = attempt.span("http::query_handler", ctx, &ctx.query_id);
         let _t = SlowRequestLogTracker::new(ctx);
         query_handle.in_span(root)
     };
@@ -927,6 +920,87 @@ pub(crate) async fn query_handler(
     };
 
     query_handle.await
+}
+
+async fn recover_submitted_query(
+    ctx: &HttpQueryContext,
+    format: QueryResultFormat,
+    attempt: QueryAttempt,
+    query: &Arc<HttpQuery>,
+) -> PoemResult<Response> {
+    query.check_owner(ctx)?;
+    if attempt.0.is_some() {
+        query.check_client_session_id(&ctx.client_session_id)?;
+    }
+    if let Some(closed) = query.check_closed() {
+        return if attempt.0.is_some() {
+            Ok(submission_outcome_unknown(
+                ctx,
+                attempt,
+                "original query is closed",
+            ))
+        } else {
+            Err(query_id_closed(&ctx.query_id, closed.reason))
+        };
+    }
+
+    let response = if attempt.0.is_some() {
+        query.recover_initial_response().await
+    } else {
+        query.get_response_page(0).await
+    };
+    let mut resp = match response {
+        Ok(resp) => resp,
+        Err(_) if attempt.0.is_some() => {
+            return Ok(submission_outcome_unknown(
+                ctx,
+                attempt,
+                "initial response is unavailable",
+            ));
+        }
+        Err(err) => {
+            return Err(PoemError::from_string(err.message(), StatusCode::NOT_FOUND));
+        }
+    };
+    // Only the originating session may recover the original query token.
+    if query.client_session_id == ctx.client_session_id {
+        resp.query_token = Some(query.query_token.clone());
+    }
+    let encoding = ResponseEncoding {
+        format,
+        arrow_result_version: require_negotiated_arrow_result_version(
+            &ctx.query_id,
+            format,
+            resp.state.arrow_result_version,
+        )
+        .map_err(HttpErrorCode::bad_request)?,
+        arrow_features: resp.state.arrow_features.clone(),
+    };
+    info!(query_id = ctx.query_id, attempt:? = attempt.0, state:? = resp.state.state;
+        "Recovered existing query submission");
+    Ok(QueryResponse::from_internal(
+        ctx.query_id.clone(),
+        resp,
+        false,
+        encoding,
+    ))
+}
+
+fn submission_outcome_unknown(
+    ctx: &HttpQueryContext,
+    attempt: QueryAttempt,
+    reason: &str,
+) -> Response {
+    info!(query_id = ctx.query_id, node_id = ctx.node_id, attempt:? = attempt.0;
+        "Query submission outcome unknown: {reason}");
+    // Return the actual error code rather than letting json_response flatten it to the HTTP status.
+    HttpErrorCode::new(
+        ErrorCode::QuerySubmissionOutcomeUnknown(format!(
+            "Query submission outcome unknown: {reason}"
+        )),
+        StatusCode::CONFLICT,
+    )
+    .as_response()
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -1257,6 +1331,48 @@ pub(crate) fn get_http_tracing_span(
         .with_properties(|| ctx.to_fastrace_properties())
 }
 
+#[derive(Clone, Copy)]
+struct QueryAttempt(Option<u32>);
+
+impl QueryAttempt {
+    fn span(self, name: &'static str, ctx: &HttpQueryContext, query_id: &str) -> Span {
+        let span = get_http_tracing_span(name, ctx, query_id);
+        if let Some(attempt) = self.0 {
+            span.add_property(|| ("query_attempt", attempt.to_string()));
+        }
+        span
+    }
+
+    fn log_read_retry(self, phase: &str, query_id: &str, page_no: Option<usize>) {
+        if let Some(attempt) = self.0.filter(|&n| n > 0) {
+            info!(query_id, phase, page_no:?, attempt; "Retrying query result request");
+        }
+    }
+}
+
+impl<'a> FromRequest<'a> for QueryAttempt {
+    async fn from_request(req: &'a Request, _body: &mut RequestBody) -> PoemResult<Self> {
+        let mut values = req.headers().get_all(HEADER_QUERY_ATTEMPT).iter();
+        let Some(value) = values.next() else {
+            return Ok(Self(None));
+        };
+        let attempt = value
+            .to_str()
+            .ok()
+            .filter(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|value| value.parse().ok())
+            .filter(|_| values.next().is_none());
+        if attempt.is_none() && req.method() == Method::POST {
+            return Err(HttpErrorCode::bad_request(ErrorCode::BadArguments(format!(
+                "{HEADER_QUERY_ATTEMPT} must be a single unsigned 32-bit decimal integer"
+            )))
+            .into());
+        }
+        // On result GETs this header is telemetry only.
+        Ok(Self(attempt))
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum QueryResultFormat {
     Json,
@@ -1318,6 +1434,51 @@ mod tests {
     use super::*;
     use crate::servers::http::v1::query::HttpQueryRequest;
     use crate::test_kits::TestFixture;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_query_attempt_does_not_start_while_reserved() -> anyhow::Result<()> {
+        let _fixture = TestFixture::setup().await?;
+        let ep = Route::new().nest("/v1", query_route());
+        let manager = HttpQueryManager::instance();
+        let query_id = "pending-submission-test";
+        let QueryStart::Reserved(reservation) = manager.reserve_query(query_id, false) else {
+            panic!("initial reservation must succeed");
+        };
+
+        let submit = |attempt| {
+            ep.call(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/query".parse().unwrap())
+                    .header("authorization", "Basic cm9vdDo=")
+                    .header("content-type", "application/json")
+                    .header(HEADER_QUERY_ID, query_id)
+                    .header(HEADER_QUERY_ATTEMPT, attempt)
+                    .body(r#"{"sql":"SELECT 1"}"#),
+            )
+        };
+        // Hold the same registry entry that the first handler owns across try_create.
+        for attempt in ["0", "1"] {
+            let response = submit(attempt).await?;
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            assert!(manager.get_query(query_id).is_none());
+            assert_eq!(manager.status().0, 0);
+        }
+        // Cancellation before spawn releases the reservation, but a retry still cannot start.
+        drop(reservation);
+        assert!(matches!(
+            manager.reserve_query(query_id, true),
+            QueryStart::Missing
+        ));
+        assert_eq!(submit("0").await?.status(), StatusCode::OK);
+        assert_eq!(manager.status().0, 1);
+        assert_eq!(submit("1").await?.status(), StatusCode::OK);
+        assert_eq!(manager.status().0, 1);
+        manager
+            .close_query(query_id, CloseReason::Canceled, None)
+            .await?;
+        Ok(())
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_initial_page_error_closes_registered_query() -> anyhow::Result<()> {

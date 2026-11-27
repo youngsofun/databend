@@ -129,7 +129,7 @@ build_exceptions! {
     CannotConnectNode(1038),
 }
 
-// Session and Query Errors [1041-1044, 1053, 1127]
+// Session and Query Errors [1041-1044, 1053, 1127, 1136]
 build_exceptions! {
     /// Too many connections for user
     TooManyUserConnections(1041),
@@ -143,6 +143,8 @@ build_exceptions! {
     UnknownSession(1053),
     /// Query not found
     UnknownQuery(1127),
+    /// The result of an earlier HTTP query submission could not be recovered.
+    QuerySubmissionOutcomeUnknown(1136),
 }
 
 // Internal System Errors [1000-1100, 1104, 1122-1123]

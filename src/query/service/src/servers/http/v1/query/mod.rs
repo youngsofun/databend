@@ -44,6 +44,7 @@ pub use http_query::ResponseState;
 pub use http_query_context::HttpQueryContext;
 pub(crate) use http_query_manager::CloseReason;
 pub use http_query_manager::HttpQueryManager;
+pub(crate) use http_query_manager::QueryStart;
 pub use page_manager::PageManager;
 pub use page_manager::ResponseData;
 pub use query_token::QueryToken;

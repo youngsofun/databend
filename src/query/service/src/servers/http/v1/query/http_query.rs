@@ -709,6 +709,7 @@ pub struct HttpQuery {
     client_state: Arc<Mutex<ClientState>>,
     pub(crate) page_manager: Arc<TokioMutex<PageManager>>,
     last_session_conf: Arc<Mutex<Option<HttpSessionConf>>>,
+    initial_response_pending: AtomicBool,
     pub(crate) is_txn_mgr_saved: AtomicBool,
     /// The result cache key last recorded in meta for this query, see `result_cache_owner`.
     saved_result_cache_key: Mutex<String>,
@@ -817,6 +818,7 @@ impl HttpQuery {
             temp_tbl_mgr: session.temp_tbl_mgr().clone(),
             query_mem_stat: ctx.get_query_memory_tracking(),
             query_io_stats: ctx.get_local_io_stats(),
+            initial_response_pending: AtomicBool::new(true),
             is_txn_mgr_saved: Default::default(),
             last_session_conf: Default::default(),
             saved_result_cache_key: Default::default(),
@@ -826,12 +828,34 @@ impl HttpQuery {
     #[async_backtrace::framed]
     #[fastrace::trace(name = "HttpQuery::get_response_page",properties = {"page_no": "{page_no}"})]
     pub async fn get_response_page(&self, page_no: usize) -> Result<HttpQueryResponseInternal> {
+        self.get_response_page_inner(page_no, false).await
+    }
+
+    pub(super) fn initial_response_pending(&self) -> bool {
+        self.initial_response_pending.load(Ordering::Acquire)
+    }
+
+    pub(super) fn finish_initial_response(&self) {
+        self.initial_response_pending
+            .store(false, Ordering::Release);
+    }
+
+    pub(crate) async fn recover_initial_response(&self) -> Result<HttpQueryResponseInternal> {
+        self.get_response_page_inner(0, true).await
+    }
+
+    async fn get_response_page_inner(
+        &self,
+        page_no: usize,
+        include_session: bool,
+    ) -> Result<HttpQueryResponseInternal> {
         let data = Some(self.get_page(page_no).await?);
         let state = self.get_state();
         let session = self.get_response_session().await?;
         let session = {
             let mut last = self.last_session_conf.lock();
-            if Some(&session) == last.as_ref() {
+            // A retry may have lost the response that first carried this session.
+            if !include_session && Some(&session) == last.as_ref() {
                 None
             } else {
                 *last = Some(session.clone());
@@ -988,7 +1012,7 @@ impl HttpQuery {
         Ok(response)
     }
 
-    pub async fn start_query(
+    pub(crate) fn start_query(
         &mut self,
         sql: String,
         params: Option<serde_json::Value>,
